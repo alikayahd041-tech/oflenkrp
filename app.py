@@ -210,21 +210,25 @@ def complaints():
             content+=f"""<form method="post" action="/status"><input type="hidden" name="post_id" value="{r['id']}"><select name="status"><option>İnceleniyor</option><option>Kabul Edildi</option><option>Reddedildi</option></select><button>Durumu Kaydet</button></form>"""
         content+="</div>"
     content+="</section>"
-    return page(content,lang)
-
-
-    for org in LEADER_ORGS:
-        content += f"<div class='card'><h3>{org}</h3><p>Lider duyuruları ve kurum paylaşımları.</p>"
-        if current_user() and (is_admin() or session.get("leader_org") == org):
-            content += f"""
-            <form method="post" action="/post">
-                <input type="hidden" name="kind" value="Kurum Lideri Paylaşımı">
-                <input type="text" name="title" placeholder="Başlık" required>
-                <textarea name="body" placeholder="Duyuru içeriği" required></textarea>
-                <button type="submit">Paylaş</button>
-            </form>
-            """
-        content += "</div>"
-    content += "</div></section>"
+    @app.route("/applications")
+def applications():
+    lang = request.args.get("lang", "tr")
+    content = """
+    <section class='card'>
+      <h2>Başvurular</h2>
+      <p>Başvuru sistemi yakında aktif olacak.</p>
+    </section>
+    """
     return page(content, lang)
-    
+
+
+@app.route("/organizations")
+def organizations():
+    lang = request.args.get("lang", "tr")
+    content = """
+    <section class='card'>
+      <h2>Devlet Kurumları</h2>
+      <p>Kurum duyuruları yakında aktif olacak.</p>
+    </section>
+    """
+    return page(content, lang)
