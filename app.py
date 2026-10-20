@@ -210,8 +210,9 @@ def complaints():
             content+=f"""<form method="post" action="/status"><input type="hidden" name="post_id" value="{r['id']}"><select name="status"><option>İnceleniyor</option><option>Kabul Edildi</option><option>Reddedildi</option></select><button>Durumu Kaydet</button></form>"""
         content+="</div>"
     content+="</section>"
-    @app.route("/applications")
+@app.route("/applications")
 def applications():
+    lang = request.args.get("lang", "tr")
     lang = request.args.get("lang", "tr")
     content = """
     <section class='card'>
@@ -224,6 +225,7 @@ def applications():
 
 @app.route("/organizations")
 def organizations():
+    lang = request.args.get("lang", "tr")
     lang = request.args.get("lang", "tr")
     content = """
     <section class='card'>
