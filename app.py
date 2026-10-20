@@ -531,7 +531,16 @@ def complaints():
     content += "</section>"
     return page(content, lang)
 
+@app.route("/rules")
+def rules():
+    lang = request.args.get("lang", "tr")
+    content = "<h2>Sunucu Kuralları</h2>"
+    rows = db().execute("SELECT * FROM rules ORDER BY id DESC").fetchall()
 
+    for rule in rows:
+        content += f"<div class='card'><p>{esc(rule['body'])}</p></div>"
+
+    return page(content, lang)
 @app.route("/applications")
 def applications():
     lang = request.args.get("lang", "tr")
