@@ -451,3 +451,91 @@ table{width:100%;border-collapse:collapse}td{padding:8px 14px;border-bottom:1px 
 <header><a class="brand" href="/">{{ SITE }} Forum</a>
 <nav><a href="/">Ana Sayfa</a><a href="/ekip">Yönetim Ekibi</a>
 {% if me %}{% if me.level >= ROLE_ADMIN_LEVEL %}<a href="/panel">Panel</a>{% endif %}
+<span class="mut">{{ me.username }} · {{ me.role }}</span>
+<form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf() }}"><button class="btn sec">Çıkış</button></form>
+{% else %}<a href="/login">Giriş</a><a href="/register">Kayıt Ol</a>{% endif %}</nav></header>
+<main>{% for m in get_flashed_messages() %}<div class="flash">{{ m }}</div>{% endfor %}
+{% block content %}{% endblock %}</main></body></html>"""
+
+INDEX = """{% extends "base.html" %}{% block content %}
+{% for sec, cats in sections.items() %}<div class="card"><h2>{{ sec }}</h2>
+{% for c in cats %}<div class="row"><a href="/c/{{ c.slug }}">{{ c.name }}</a>
+<span class="mut">{{ counts[c.id] }} konu</span></div>{% endfor %}</div>{% endfor %}{% endblock %}"""
+
+AUTH = """{% extends "base.html" %}{% block content %}
+<div class="card pad"><h2 style="padding:0 0 10px">{{ 'Kayıt Ol' if mode=='register' else 'Giriş Yap' }}</h2>
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf() }}">
+<label>Kullanıcı adı</label><input name="username" required>
+<label>Şifre</label><input name="password" type="password" required>
+<p><button>{{ 'Kayıt Ol' if mode=='register' else 'Giriş' }}</button></p></form></div>{% endblock %}"""
+
+CATEGORY = """{% extends "base.html" %}{% block content %}
+<p class="mut"><a href="/">Ana Sayfa</a> › {{ cat.section }} › {{ cat.name }}</p>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+<h1 style="margin:0">{{ cat.name }}</h1>
+{% if can_post(me, cat) %}<a class="btn" href="/c/{{ cat.slug }}/new">{{ 'Form Doldur' if cat.form_key else 'Yeni Konu' }}</a>
+{% elif not me %}<a class="btn sec" href="/login">Giriş yap</a>{% endif %}</div>
+<div class="card">{% for t in threads %}<div class="row"><div>
+<a href="/t/{{ t.id }}">{% if t.pinned %}📌 {% endif %}{{ t.title }}</a>
+<div class="mut">{{ t.author.username }} · {{ t.created.strftime('%d.%m.%Y %H:%M') }} · {{ t.posts|length }} yanıt</div></div>
+{% if t.status %}<span class="badge b-{{ t.status[:3] }}">{{ t.status }}</span>{% endif %}</div>
+{% else %}<div class="row mut">Henüz konu yok.</div>{% endfor %}</div>{% endblock %}"""
+
+NEW = """{% extends "base.html" %}{% block content %}
+<p class="mut"><a href="/c/{{ cat.slug }}">← {{ cat.name }}</a></p>
+<div class="card pad"><h2 style="padding:0 0 10px">{{ form.title if form else 'Yeni Konu' }}</h2>
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf() }}">
+{% if form %}{% for key, label, typ in form.fields %}<label>{{ label }}</label>
+{% if typ == 'textarea' %}<textarea name="{{ key }}" required>{{ vals.get(key,'') }}</textarea>
+{% elif typ.startswith('select:') %}<select name="{{ key }}">{% for o in typ[7:].split(',') %}<option {{ 'selected' if vals.get(key)==o }}>{{ o }}</option>{% endfor %}</select>
+{% else %}<input name="{{ key }}" type="{{ typ }}" value="{{ vals.get(key,'') }}" required>{% endif %}{% endfor %}
+{% else %}<label>Başlık</label><input name="title" value="{{ vals.get('title','') }}" required>
+<label>İçerik</label><textarea name="body" style="min-height:240px" required>{{ vals.get('body','') }}</textarea>{% endif %}
+<p><button>Gönder</button></p></form></div>{% endblock %}"""
+
+THREAD = """{% extends "base.html" %}{% block title %}{{ t.title }}{% endblock %}{% block content %}
+<p class="mut"><a href="/c/{{ t.category.slug }}">← {{ t.category.name }}</a></p>
+<div class="card"><h2>{{ t.title }}{% if t.status %} <span class="badge b-{{ t.status[:3] }}">{{ t.status }}</span>{% endif %}</h2>
+<div class="pad mut">{{ t.author.username }} ({{ t.author.role }}) · {{ t.created.strftime('%d.%m.%Y %H:%M') }}</div>
+{% if data %}<table>{% for k, v in data.items() %}<tr><td>{{ labels.get(k, k) }}</td><td class="body">{{ v }}</td></tr>{% endfor %}</table>
+{% else %}<div class="pad body">{{ t.body }}</div>{% endif %}</div>
+{% if me and me.level >= REVIEW_LEVEL and t.status %}<div class="card pad"><form method="post" action="/t/{{ t.id }}/status">
+<input type="hidden" name="csrf" value="{{ csrf() }}"><div style="display:flex;gap:8px">
+<select name="status">{% for s in STATUSES %}<option {{ 'selected' if s==t.status }}>{{ s }}</option>{% endfor %}</select>
+<button>Durumu Güncelle</button></div></form></div>{% endif %}
+{% for p in t.posts %}<div class="card"><div class="pad mut">{{ p.author.username }} ·
+<b>{{ p.author.role }}</b> · {{ p.created.strftime('%d.%m.%Y %H:%M') }}</div><div class="pad body" style="padding-top:0">{{ p.body }}</div></div>{% endfor %}
+<div id="son"></div>
+{% if me %}<div class="card pad"><form method="post"><input type="hidden" name="csrf" value="{{ csrf() }}">
+<label style="margin-top:0">Yanıt yaz</label><textarea name="body" required></textarea><p><button>Gönder</button></p></form></div>
+{% else %}<p><a href="/login">Yanıt yazmak için giriş yap.</a></p>{% endif %}
+{% if me and me.level >= DELETE_LEVEL %}<form class="inline" method="post" action="/t/{{ t.id }}/pin"><input type="hidden" name="csrf" value="{{ csrf() }}"><button class="btn sec">Sabitle / Kaldır</button></form>
+<form class="inline" method="post" action="/t/{{ t.id }}/delete" onsubmit="return confirm('Silinsin mi?')"><input type="hidden" name="csrf" value="{{ csrf() }}"><button class="btn red">Sil</button></form>{% endif %}
+{% endblock %}"""
+
+TEAM = """{% extends "base.html" %}{% block content %}
+<div class="card"><h2>Yönetim Ekibi</h2>
+{% for u in staff %}<div class="row"><span>{{ u.username }}</span><span class="badge">{{ u.role }}</span></div>
+{% else %}<div class="row mut">Henüz yönetici yok.</div>{% endfor %}</div>
+<div class="card"><h2>Liderler</h2>
+{% for u in leaders %}<div class="row"><span>{{ u.username }}</span><span class="mut">{{ u.leader_of }}</span></div>
+{% else %}<div class="row mut">Henüz lider yok.</div>{% endfor %}</div>{% endblock %}"""
+
+PANEL = """{% extends "base.html" %}{% block content %}
+<p class="mut">Lider slug'ları (virgülle): {% for c in cats %}<code>{{ c.slug }}</code> {% endfor %} — hepsi için <code>*</code></p>
+{% for u in users %}<div class="card pad"><form method="post"><input type="hidden" name="csrf" value="{{ csrf() }}">
+<input type="hidden" name="uid" value="{{ u.id }}"><b>{{ u.username }}</b>
+<label>Rol</label><select name="role">{% for r, l in ROLES %}<option {{ 'selected' if r==u.role }}>{{ r }}</option>{% endfor %}</select>
+<label>Lider olduğu birimler</label><input name="leader_of" value="{{ u.leader_of or '' }}" placeholder="fbi,hastane">
+<p><button>Kaydet</button></p></form></div>{% endfor %}{% endblock %}"""
+
+app.jinja_env.loader = DictLoader({
+    "base.html": BASE, "index.html": INDEX, "auth.html": AUTH, "category.html": CATEGORY,
+    "new.html": NEW, "thread.html": THREAD, "team.html": TEAM, "panel.html": PANEL,
+})
+
+with app.app_context():
+    seed()
+
+if __name__ == "__main__":
+    app.run(debug=True)
