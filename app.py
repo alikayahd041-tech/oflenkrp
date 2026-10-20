@@ -534,4 +534,4 @@ def complaints():
 
 @app.route("/applications")
 def applications():
-    lang = request.args.get("lang", "tr"
+    lang = request.args.get("lang", "tr")
