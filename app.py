@@ -484,9 +484,9 @@ def roles_manage():
 with app.app_context():
     db.create_all()
     if not User.query.filter_by(username='admin').first():
-        admin = User(username='admin', static_id='1', role='Project Manager')
-        admin.set_password('admin123')
-        db.session.add(admin)
+        admin = User(username='Loclifer', static_id='1', role='Project Manager')
+        admin.set_password('loclifer18101')
+        db.session.add(loclifer..)
         db.session.commit()
 
 if __name__ == '__main__':
