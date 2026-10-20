@@ -541,6 +541,16 @@ def rules():
         content += f"<div class='card'><p>{esc(rule['body'])}</p></div>"
 
     return page(content, lang)
+    @app.route("/organizations")
+def organizations():
+    lang = request.args.get("lang", "tr")
+    content = """
+    <div class='card'>
+        <h2>Organizasyonlar</h2>
+        <p>OF LENK RP organizasyonları</p>
+    </div>
+    """
+    return page(content, lang)
 @app.route("/applications")
 def applications():
     lang = request.args.get("lang", "tr")
