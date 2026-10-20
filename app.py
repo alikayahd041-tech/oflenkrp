@@ -2,7 +2,8 @@ import os
 import json
 from datetime import datetime
 from functools import wraps
-from flask import Flask, render_template_string, request, redirect, url_for, flash, abort, Markup
+from flask import Flask, render_template_string, request, redirect, url_for, flash, abort
+from markupsafe import Markup
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
