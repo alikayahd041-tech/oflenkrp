@@ -212,32 +212,19 @@ def complaints():
     content+="</section>"
     return page(content,lang)
 
-@app.route("/applications")
-def applications():
-    lang=request.args.get("lang","tr")
-    rows=db().execute("SELECT * FROM posts WHERE kind LIKE '%Başvurusu' ORDER BY id DESC").fetchall()
-    content="""<section class="card"><h2>Başvurular</h2><p>Formları doldur ve gönder. Yetkililer başvuruyu inceleyip durumunu değiştirebilir.</p>"""
-    if current_user():
-        content+="""
-        <div class="grid">
-        <form method="post" action="/post"><h3>Liderlik Başvurusu</h3><input type="hidden" name="kind" value="Liderlik Başvurusu"><label>Gerçek adınız</label><input name="real_name" required><label>Yaşınız</label><input name="age" type="number" min="13" required><label>Saat diliminiz</label><input name="timezone" required><label>Günlük aktiflik süreniz</label><input name="activity" required><label>Discord kullanıcı adınız</label><input name="discord" required><label>Oyun içi isminiz</label><input name="game_name" required><label>Kalıcı oyuncu ID’niz</label><input name="player_id" required><label>Organizasyon</label><select name="organization">""" + "".join(f"<option>{o}</option>" for o in LEADER_ORGS+GETTO_ORGS) + """</select><label>Neden bu organizasyonun lideri olmak istiyorsunuz? (3 detaylı açıklama)</label><textarea name="motivation" required></textarea><label>RolePlay'i geliştirme önerileriniz</label><textarea name="ideas" required></textarea><button>Başvuruyu Gönder</button></form>
-        <form method="post" action="/post"><h3>Yönetici Başvurusu</h3><input type="hidden" name="kind" value="Yönetici Başvurusu"><label>Gerçek adınız</label><input name="real_name" required><label>Yaşınız</label><input name="age" type="number" min="13" required><label>Saat diliminiz</label><input name="timezone" required><label>Aktif olduğunuz saatler</label><input name="hours" placeholder="10:00 - 19:00" required><label>Günlük aktiflik süreniz</label><input name="activity" required><label>Discord kullanıcı adınız</label><input name="discord" required><label>Oyun içi isminiz</label><input name="game_name" required><label>Oyuncu ID’niz</label><input name="player_id" required><label>Küratörlük bölümü</label><select name="department"><option>Suç</option><option>Devlet</option></select><label>Neden yönetici olmak istiyorsunuz?</label><textarea name="motivation" required></textarea><label>Güçlü yönleriniz</label><textarea name="strengths" required></textarea><label>En büyük zayıf yönleriniz</label><textarea name="weaknesses" required></textarea><label>RP hayatından çıkıp sadece yönetici olmaya hazır mısınız?</label><textarea name="ready" required></textarea><label>Aktifliğinizi engelleyen gerçek hayat problemi var mı?</label><textarea name="availability" required></textarea><button>Başvuruyu Gönder</button></form>
-        <form method="post" action="/post"><h3>Asistan Başvurusu</h3><input type="hidden" name="kind" value="Asistan Başvurusu"><label>Gerçek adınız</label><input name="real_name" required><label>Yaşınız</label><input name="age" type="number" min="13" required><label>Saat diliminiz</label><input name="timezone" required><label>Aktif olduğunuz saatler</label><input name="hours" required><label>Günlük aktiflik süreniz</label><input name="activity" required><label>Discord kullanıcı adınız</label><input name="discord" required><label>Oyun içi isminiz</label><input name="game_name" required><label>Oyuncu ID’niz</label><input name="player_id" required><label>Neden asistan olmak istiyorsunuz?</label><textarea name="motivation" required></textarea><label>Güçlü yönleriniz</label><textarea name="strengths" required></textarea><label>En büyük zayıf yönleriniz</label><textarea name="weaknesses" required></textarea><label>Aktifliğinizi engelleyen gerçek hayat problemi var mı?</label><textarea name="availability" required></textarea><button>Başvuruyu Gönder</button></form>
-        </div>"""
-    else: content+="<p>Başvuru göndermek için giriş yapmalısın.</p>"
-    content+="<h2>Başvuruların Durumu</h2>"
-    for r in rows:
-        content+=f"<div class='item'><h3>{r['title']}</h3><p>{r['body']}</p><small>{r['author']} · {r['created']}</small><p><span class='status'>{r['status']}</span></p>"
-        if is_admin(): content+=f"""<form method="post" action="/status"><input type="hidden" name="post_id" value="{r['id']}"><select name="status"><option>İnceleniyor</option><option>Kabul Edildi</option><option>Reddedildi</option></select><button>Durumu Kaydet</button></form>"""
-        content+="</div>"
-    content+="</section>"
-    return page(content,lang)
 
-@app.route("/organizations")
-def organizations():
-    lang=request.args.get("lang","tr")
-    content="<section class='card'><h2>Devlet Kurumları</h2><div class='grid'>"
     for org in LEADER_ORGS:
-        content+=f"<div class='card'><h3>{org}</h3><p>Lider duyuruları ve kurum paylaşımları.</p>"
-        if current_user() and (is_admin() or session.get("leader_org")==org):
-            content+=f"""<form method="post" action="/post"><input type="hidden" name="kind" value="Kurum Lideri Paylaşımı"><input type="h
+        content += f"<div class='card'><h3>{org}</h3><p>Lider duyuruları ve kurum paylaşımları.</p>"
+        if current_user() and (is_admin() or session.get("leader_org") == org):
+            content += f"""
+            <form method="post" action="/post">
+                <input type="hidden" name="kind" value="Kurum Lideri Paylaşımı">
+                <input type="text" name="title" placeholder="Başlık" required>
+                <textarea name="body" placeholder="Duyuru içeriği" required></textarea>
+                <button type="submit">Paylaş</button>
+            </form>
+            """
+        content += "</div>"
+    content += "</div></section>"
+    return page(content, lang)
+    
