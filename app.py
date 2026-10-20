@@ -1,326 +1,245 @@
-import os, sqlite3
-from functools import wraps
-from flask import Flask, request, redirect, url_for, session, flash, render_template_string, g
-from werkzeug.security import generate_password_hash, check_password_hash
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { supabase } from "../lib/supabase";
 
-app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "change-this-secret-before-deploying")
-DB = os.environ.get("DATABASE_PATH", "forum.db")
+type ServerKey = "tr" | "ksa";
+type Profile = { id: string; display_name: string | null; role: string; server: ServerKey };
+type Complaint = {
+  id: string; server: ServerKey; category: string; accused_name: string; author_name: string;
+  static_id: string; complaint_date: string; complaint_time: string; details: string;
+  evidence_url: string | null; status: string; created_at: string;
+};
+type Application = { id: string; server: ServerKey; type: string; applicant_name: string; status: string; created_at: string; answers: Record<string,string> };
 
-ROLES = [
-    "Project Manager", "Deputy Project Manager", "Project Coordinator",
-    "Chief Administrator", "Deputy Chief Administrator", "Senior Administrator",
-    "Junior Administrator", "The Server Administrator", "Admin Assistant", "Member"
-]
-ADMIN_ROLES = ROLES[:-1]
-LEADER_ORGS = ["Hastane", "Ordu", "Şehir Polisi", "FBI", "Medya", "Belediye"]
-GETTO_ORGS = ["Fangs", "Wolves", "Ravens"]
-RULE_CATEGORIES = ["Genel Kurallar", "Devlet Kuralları", "Liderlik Kuralları", "Yeşil Bölge Kuralları"]
+const roles = [
+  "Project Manager", "Deputy Project Manager", "Project Coordinator",
+  "Chief Administrator", "Deputy Chief Administrator", "Senior Administrator",
+  "Junior Administrator", "Server Administrator", "Admin Assistant"
+];
+const roleLabels: Record<string,string> = {
+  "Project Manager": "Project Manager",
+  "Deputy Project Manager": "Deputy Project Manager",
+  "Project Coordinator": "Project Coordinator",
+  "Chief Administrator": "Chief Administrator",
+  "Deputy Chief Administrator": "Deputy Chief Administrator",
+  "Senior Administrator": "Senior Administrator",
+  "Junior Administrator": "Junior Administrator",
+  "Server Administrator": "Server Administrator",
+  "Admin Assistant": "Admin Assistant",
+  member: "Member"
+};
+const trRules = ["Genel Kurallar", "Devlet Kuralları", "Liderlik Kuralları", "Yeşil Bölge Kuralları"];
+const ksaRules = ["القوانين العامة", "قوانين الحكومة", "قوانين القيادة", "قوانين المنطقة الآمنة"];
+const government = ["Hastane", "Ordu", "Şehir Polisi", "FBI", "Medya", "Belediye"];
+const getto = ["Fangs", "Wolves", "Rawens"];
 
-def db():
-    if "db" not in g:
-        g.db = sqlite3.connect(DB)
-        g.db.row_factory = sqlite3.Row
-    return g.db
+function AppButton({children, ...props}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return <button className="btn" {...props}>{children}</button>;
+}
 
-@app.teardown_appcontext
-def close_db(exc):
-    conn = g.pop("db", None)
-    if conn is not None:
-        conn.close()
+export default function Home() {
+  const [server, setServer] = useState<ServerKey>("tr");
+  const [lang, setLang] = useState<"tr"|"ar">("tr");
+  const [user, setUser] = useState<any>(null);
+  const [profile, setProfile] = useState<Profile|null>(null);
+  const [tab, setTab] = useState("home");
+  const [message, setMessage] = useState("");
+  const [complaints, setComplaints] = useState<Complaint[]>([]);
+  const [applications, setApplications] = useState<Application[]>([]);
+  const [rules, setRules] = useState<any[]>([]);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [complaintType, setComplaintType] = useState("player");
+  const [appType, setAppType] = useState("leadership");
+  const [form, setForm] = useState<Record<string,string>>({});
+  const isAr = server === "ksa" || lang === "ar";
+  const isAdmin = !!profile && profile.role !== "member";
+  const isProjectManager = profile?.role === "Project Manager";
+  const canReview = isAdmin;
+  const labels = useMemo(() => isAr ? {
+    choose:"اختر الخادم", tr:"الخادم التركي", ksa:"الخادم السعودي", home:"الرئيسية", rules:"القوانين",
+    complaints:"الشكاوى", applications:"التقديمات", admin:"لوحة الإدارة", login:"تسجيل الدخول",
+    logout:"تسجيل الخروج", email:"البريد الإلكتروني", password:"كلمة المرور", signIn:"دخول",
+    register:"إنشاء حساب", title:"منتدى OFF Leank RP", intro:"مجتمع رول بلاي رسمي",
+    newComplaint:"إرسال شكوى", newApplication:"إرسال طلب", submit:"إرسال", status:"الحالة",
+    accused:"اسم الشخص المشتكى عليه", author:"اسمك داخل اللعبة", staticId:"الرقم الثابت",
+    date:"التاريخ", time:"الوقت", details:"تفاصيل الشكوى", evidence:"رابط الدليل",
+    player:"شكوى لاعب", adminComplaint:"شكوى ضد إداري", leadership:"طلب قيادة",
+    administrator:"طلب إداري", assistant:"طلب مساعد إداري", pending:"قيد المراجعة",
+    accepted:"مقبول", rejected:"مرفوض", review:"مراجعة", accept:"قبول", reject:"رفض",
+    noItems:"لا توجد سجلات بعد.", role:"رتبتك", serverLabel:"الخادم"
+  } : {
+    choose:"Sunucu seç", tr:"Türkiye Sunucusu", ksa:"KSA Sunucusu", home:"Ana Sayfa", rules:"Kurallar",
+    complaints:"Şikâyetler", applications:"Başvurular", admin:"Yönetim Paneli", login:"Giriş",
+    logout:"Çıkış yap", email:"E-posta", password:"Şifre", signIn:"Giriş yap",
+    register:"Hesap oluştur", title:"OFF Leank RP Forum", intro:"Resmî RolePlay topluluğu",
+    newComplaint:"Şikâyet gönder", newApplication:"Başvuru gönder", submit:"Gönder", status:"Durum",
+    accused:"Şikâyet edilen kişinin adı", author:"Oyun içi adın", staticId:"Static ID",
+    date:"Tarih", time:"Saat", details:"Şikâyet ayrıntıları", evidence:"Kanıt bağlantısı",
+    player:"Oyuncu şikâyeti", adminComplaint:"Yönetici şikâyeti", leadership:"Liderlik başvurusu",
+    administrator:"Yönetici başvurusu", assistant:"Asistan başvurusu", pending:"İnceleniyor",
+    accepted:"Kabul edildi", rejected:"Reddedildi", review:"İncele", accept:"Kabul et", reject:"Reddet",
+    noItems:"Henüz kayıt yok.", role:"Rolün", serverLabel:"Sunucu"
+  }, [isAr]);
 
-def init_db():
-    with sqlite3.connect(DB) as con:
-        con.execute("""CREATE TABLE IF NOT EXISTS users(
-            id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'Member',
-            lang TEXT NOT NULL DEFAULT 'tr')""")
-        con.execute("""CREATE TABLE IF NOT EXISTS posts(
-            id INTEGER PRIMARY KEY, kind TEXT NOT NULL, category TEXT NOT NULL,
-            title TEXT NOT NULL, body TEXT NOT NULL, author TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'İnceleniyor', created TEXT DEFAULT CURRENT_TIMESTAMP)""")
-        con.execute("""CREATE TABLE IF NOT EXISTS comments(
-            id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, author TEXT NOT NULL,
-            body TEXT NOT NULL, created TEXT DEFAULT CURRENT_TIMESTAMP)""")
-        con.execute("""CREATE TABLE IF NOT EXISTS rules(
-            id INTEGER PRIMARY KEY, category TEXT NOT NULL, body TEXT NOT NULL,
-            author TEXT NOT NULL, created TEXT DEFAULT CURRENT_TIMESTAMP)""")
-        con.commit()
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth.getSession().then(({data}) => setUser(data.session?.user ?? null));
+    const {data:{subscription}} = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
-@app.before_request
-def setup():
-    init_db()
+  useEffect(() => {
+    if (!supabase || !user) { setProfile(null); return; }
+    let alive = true;
+    supabase.from("profiles").select("id,display_name,role,server").eq("id", user.id).maybeSingle()
+      .then(({data}) => { if (alive && data) setProfile(data as Profile); });
+    return () => { alive = false; };
+  }, [user]);
 
-def current_user():
-    if "user_id" not in session:
-        return None
-    return db().execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
+  async function loadData() {
+    if (!supabase) return;
+    const [{data:c},{data:a},{data:r}] = await Promise.all([
+      supabase.from("complaints").select("*").eq("server",server).order("created_at",{ascending:false}).limit(100),
+      supabase.from("applications").select("*").eq("server",server).order("created_at",{ascending:false}).limit(100),
+      supabase.from("rules").select("*").eq("server",server).order("sort_order")
+    ]);
+    setComplaints((c ?? []) as Complaint[]);
+    setApplications((a ?? []) as Application[]);
+    setRules(r ?? []);
+  }
+  useEffect(() => { void loadData(); }, [server, user]);
 
-def is_admin(user=None):
-    user = user or current_user()
-    return bool(user and user["role"] in ADMIN_ROLES)
+  async function auth(e: FormEvent, mode:"login"|"register") {
+    e.preventDefault();
+    if (!supabase) { setMessage("Önce .env.local dosyasına Supabase URL ve anon key ekle."); return; }
+    setBusy(true); setMessage("");
+    const result = mode === "login"
+      ? await supabase.auth.signInWithPassword({email,password})
+      : await supabase.auth.signUp({email,password});
+    setBusy(false);
+    setMessage(result.error?.message ?? (mode === "register" ? "Hesap oluşturuldu. E-posta doğrulaması gerekiyorsa gelen kutunu kontrol et." : "Giriş başarılı."));
+  }
 
-def login_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if not current_user():
-            flash("Bu işlem için giriş yapmalısın.")
-            return redirect(url_for("home"))
-        return fn(*args, **kwargs)
-    return wrapper
+  async function submitComplaint(e: FormEvent) {
+    e.preventDefault();
+    if (!supabase || !user) { setMessage("Şikâyet göndermek için giriş yapmalısın."); return; }
+    const {error} = await supabase.from("complaints").insert({
+      server, category:complaintType, accused_name:form.accused || "", author_name:form.author || "",
+      static_id:form.static_id || "", complaint_date:form.date || "", complaint_time:form.time || "",
+      details:form.details || "", evidence_url:form.evidence || null
+    });
+    setMessage(error?.message ?? "Şikâyet gönderildi."); setForm({});
+    if (!error) { setTab("complaints"); void loadData(); }
+  }
 
-def admin_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if not is_admin():
-            flash("Bu alan yalnızca yetkili yöneticilere açıktır.")
-            return redirect(url_for("home"))
-        return fn(*args, **kwargs)
-    return wrapper
+  const appQuestions: Record<string,string[]> = {
+    leadership: ["Gerçek adınız","Yaşınız","Saat diliminiz","Günlük ortalama aktiflik süreniz","Discord kullanıcı adınız","Oyun içi isminiz","Kalıcı oyuncu ID’niz","Liderlik başvurusu yapılan organizasyon","Neden özellikle bu organizasyonun lideri olmak istiyorsunuz? (3 detaylı açıklama)","RolePlay’i geliştirmek için önerileriniz"],
+    administrator: ["Gerçek adınız","Yaşınız","Saat diliminiz","Sunucu saatine göre aktif olduğunuz saatler","Günlük ortalama aktiflik süreniz","Discord kullanıcı adınız","Oyun içi isminiz","Kalıcı oyuncu ID’niz","Küratör olmak istediğiniz bölüm (Suç/Devlet)","Neden yönetici olmak istiyorsunuz?","Güçlü yönleriniz","En büyük zayıf yönleriniz","RP’den çıkıp sadece yönetici olmaya hazır mısınız?","Aktifliğinizi engelleyen bir durum var mı?"],
+    assistant: ["Gerçek adınız","Yaşınız","Saat diliminiz","Sunucu saatine göre aktif olduğunuz saatler","Günlük ortalama aktiflik süreniz","Discord kullanıcı adınız","Oyun içi isminiz","Kalıcı oyuncu ID’niz","Neden asistan olmak istiyorsunuz?","Güçlü yönleriniz","En büyük zayıf yönleriniz","Aktifliğinizi engelleyen bir durum var mı?"]
+  };
 
-PAGE = r"""
-<!doctype html><html lang="{{ 'ar' if lang=='ar' else 'tr' }}" dir="{{ 'rtl' if lang=='ar' else 'ltr' }}">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OF LENK RP Forum</title>
-<style>
-:root{--bg:#080d18;--panel:#111b2d;--line:#263d5d;--blue:#1685ff;--text:#eef4ff;--muted:#aebdd2}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Arial,sans-serif}
-header{background:#0d1728;border-bottom:2px solid var(--blue);padding:20px 14px;text-align:center}
-h1{margin:0;color:#58aaff;letter-spacing:2px}header p{color:var(--muted);margin:8px 0 0}
-nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;padding:13px;background:#0b1322;position:sticky;top:0}
-a,button{cursor:pointer}a{color:#76baff;text-decoration:none}button,.btn{border:0;border-radius:7px;background:var(--blue);color:white;padding:10px 13px;font-weight:700;display:inline-block}
-button.secondary,.btn.secondary{background:#24354d}button.danger{background:#9f2d43}
-main{max-width:980px;margin:22px auto;padding:0 13px}.hero,.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:14px}
-.hero{text-align:center;padding:28px 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
-h2,h3{color:#58aaff;margin-top:0}p{line-height:1.55;color:#d1dced}.muted,small{color:var(--muted)}
-input,textarea,select{width:100%;padding:11px;margin:5px 0 12px;background:#08111f;color:white;border:1px solid #344b69;border-radius:7px}
-textarea{min-height:100px;resize:vertical}label{font-size:14px;color:#c9d7e9}form{margin-top:12px}.field{margin-bottom:5px}
-.status{display:inline-block;padding:5px 8px;border-radius:20px;background:#24354d;font-size:12px}
-.item{border-top:1px solid var(--line);padding:13px 0}.actions{display:flex;gap:7px;flex-wrap:wrap}.flash{background:#18375a;padding:10px;border-radius:8px;margin:10px 0}
-footer{text-align:center;padding:24px;color:#8ea2bd}@media(max-width:500px){h1{font-size:24px}nav{position:static}}
-</style></head><body>
-<header><h1>OF LENK RP</h1><p>{{ 'المنتدى الرسمي للمجتمع' if lang=='ar' else 'Resmî Topluluk Forumu' }}</p></header>
-<nav>
-<a class="btn secondary" href="{{url_for('home',lang=lang)}}">{{'الرئيسية' if lang=='ar' else 'Ana Sayfa'}}</a>
-<a class="btn secondary" href="{{url_for('rules',lang=lang)}}">{{'القوانين' if lang=='ar' else 'Sunucu Kuralları'}}</a>
-<a class="btn secondary" href="{{url_for('complaints',lang=lang)}}">{{'الشكاوى' if lang=='ar' else 'Şikâyetler'}}</a>
-<a class="btn secondary" href="{{url_for('applications',lang=lang)}}">{{'التقديمات' if lang=='ar' else 'Başvurular'}}</a>
-<a class="btn secondary" href="{{url_for('organizations',lang=lang)}}">{{'المنظمات' if lang=='ar' else 'Kurumlar / Getto'}}</a>
-<a class="btn secondary" href="{{url_for('home',lang='tr')}}">🇹🇷 TR</a><a class="btn secondary" href="{{url_for('home',lang='ar')}}">🇸🇦 KSA</a>
-{% if user %}<span class="btn secondary">{{user['username']}} · {{user['role']}}</span><a class="btn" href="{{url_for('logout')}}">{{'خروج' if lang=='ar' else 'Çıkış'}}</a>{% else %}<a class="btn" href="{{url_for('home',lang=lang)}}#auth">{{'دخول / تسجيل' if lang=='ar' else 'Giriş / Kayıt'}}</a>{% endif %}
-{% if admin %}<a class="btn" href="{{url_for('admin_panel',lang=lang)}}">Yönetim Paneli</a>{% endif %}
-</nav>
-<main>
-{% for msg in get_flashed_messages() %}<div class="flash">{{msg}}</div>{% endfor %}
-{{content|safe}}
-</main><footer>© 2026 OF LENK RP · Community Forum</footer></body></html>
-"""
+  async function submitApplication(e: FormEvent) {
+    e.preventDefault();
+    if (!supabase || !user) { setMessage("Başvuru göndermek için giriş yapmalısın."); return; }
+    const {error} = await supabase.from("applications").insert({server,type:appType,applicant_name:form["Oyun içi isminiz"] || form["Gerçek adınız"] || "",answers:form});
+    setMessage(error?.message ?? "Başvurun gönderildi."); setForm({});
+    if (!error) { setTab("applications"); void loadData(); }
+  }
 
-def page(content, lang=None):
-    user = current_user()
-    return render_template_string(PAGE, content=content, user=user, admin=is_admin(user), lang=lang or (request.args.get("lang") or (user["lang"] if user else "tr")))
+  async function setStatus(table:"complaints"|"applications", id:string, status:string) {
+    if (!supabase) return;
+    const {error} = await supabase.from(table).update({status}).eq("id",id);
+    setMessage(error?.message ?? "Durum güncellendi."); void loadData();
+  }
 
-@app.route("/")
-def home():
-    lang=request.args.get("lang","tr")
-    arabic=lang=="ar"
-    content=f"""
-    <section class="hero"><h2>{'مرحباً بك في OF LENK RP' if arabic else 'OF LENK RP’ye Hoş Geldin!'}</h2>
-    <p>{'اختر القسم المناسب وشارك في المجتمع.' if arabic else 'Şikâyet gönder, başvuru yap, kuralları incele ve toplulukla etkileşime geç.'}</p>
-    <div class="actions" style="justify-content:center"><a class="btn" href="/complaints?lang={lang}">{'إرسال شكوى' if arabic else 'Şikâyet Gönder'}</a><a class="btn" href="/applications?lang={lang}">{'تقديم طلب' if arabic else 'Başvuru Yap'}</a></div></section>
-    <div class="grid">
-    <section class="card"><h3>{'قوانين الخادم' if arabic else '📜 Sunucu Kuralları'}</h3><p>{'القوانين العامة وقوانين الدولة والقيادة والمنطقة الخضراء.' if arabic else 'Genel, devlet, liderlik ve yeşil bölge kuralları.'}</p><a href="/rules?lang={lang}">{'عرض القوانين' if arabic else 'Kuralları Gör'}</a></section>
-    <section class="card"><h3>{'الشكاوى' if arabic else '⚖️ Şikâyet Sistemi'}</h3><p>{'قدّم شكوى وتابع حالة المراجعة.' if arabic else 'Oyuncu veya yönetici hakkında şikâyet gönder, durumunu takip et.'}</p><a href="/complaints?lang={lang}">{'افتح القسم' if arabic else 'Bölümü Aç'}</a></section>
-    <section class="card"><h3>{'التقديمات' if arabic else '📝 Başvurular'}</h3><p>{'قيادة، إدارة، ومساعد إدارة.' if arabic else 'Liderlik, yönetici ve asistan başvuruları.'}</p><a href="/applications?lang={lang}">{'قدّم الآن' if arabic else 'Başvuru Yap'}</a></section></div>
-    <section class="card" id="auth"><h2>{'دخول / تسجيل حساب' if arabic else 'Giriş / Hesap Oluştur'}</h2>
-    <p class="muted">{'أنشئ حساباً لمشاركة الشكاوى والطلبات.' if arabic else 'Şikâyet ve başvuru göndermek için hesap oluştur.'}</p>
-    <div class="grid"><form method="post" action="/register"><h3>{'إنشاء حساب' if arabic else 'Kayıt Ol'}</h3><label>Kullanıcı adı</label><input name="username" required minlength="3" maxlength="30"><label>Şifre</label><input name="password" type="password" required minlength="8"><input type="hidden" name="lang" value="{lang}"><button>Kayıt Ol</button></form>
-    <form method="post" action="/login"><h3>{'تسجيل الدخول' if arabic else 'Giriş Yap'}</h3><label>Kullanıcı adı</label><input name="username" required><label>Şifre</label><input name="password" type="password" required><input type="hidden" name="lang" value="{lang}"><button>Giriş Yap</button></form></div></section>
-    """
-    return page(content,lang)
+  async function changeRole(targetId:string, role:string) {
+    if (!supabase) return;
+    const {error} = await supabase.rpc("set_member_role", {target_user_id:targetId, new_role:role});
+    setMessage(error?.message ?? "Rol güncellendi.");
+  }
 
-@app.post("/register")
-def register():
-    username=request.form.get("username","").strip()
-    password=request.form.get("password","")
-    if len(username)<3 or len(password)<8:
-        flash("Kullanıcı adı en az 3, şifre en az 8 karakter olmalı.")
-    else:
-        try:
-            cur=db().execute("INSERT INTO users(username,password_hash,role,lang) VALUES(?,?,?,?)",(username,generate_password_hash(password),"Member",request.form.get("lang","tr")))
-            db().commit(); session["user_id"]=cur.lastrowid; flash("Hesabın oluşturuldu.")
-        except sqlite3.IntegrityError: flash("Bu kullanıcı adı zaten alınmış.")
-    return redirect(url_for("home",lang=request.form.get("lang","tr")))
+  const title = isAr ? "OFF Leank RP" : "OFF Leank RP";
+  const currentRules = server === "tr" ? trRules : ksaRules;
 
-@app.post("/login")
-def login():
-    user=db().execute("SELECT * FROM users WHERE username=?",(request.form.get("username","").strip(),)).fetchone()
-    if user and check_password_hash(user["password_hash"],request.form.get("password","")):
-        session["user_id"]=user["id"]; flash("Giriş başarılı.")
-    else: flash("Kullanıcı adı veya şifre hatalı.")
-    return redirect(url_for("home",lang=request.form.get("lang","tr")))
+  return <main dir={isAr ? "rtl" : "ltr"} className={isAr ? "rtl" : ""}>
+    <header className="topbar">
+      <div className="brand"><span className="logo">OL</span><div><strong>OFF LEANK RP</strong><small>{labels.intro}</small></div></div>
+      <div className="top-actions">
+        <select aria-label={labels.choose} value={server} onChange={e => {setServer(e.target.value as ServerKey); setLang(e.target.value === "ksa" ? "ar" : "tr"); setTab("home");}}>
+          <option value="tr">🇹🇷 TR — Türkçe</option><option value="ksa">🇸🇦 KSA — العربية</option>
+        </select>
+        {user ? <><span className="userchip">{profile?.role ?? "Member"}</span><AppButton onClick={() => supabase?.auth.signOut()}>{labels.logout}</AppButton></> : <a className="btn" href="#auth">{labels.login}</a>}
+      </div>
+    </header>
 
-@app.route("/logout")
-def logout():
-    session.clear(); return redirect(url_for("home"))
+    <section className="hero">
+      <div className="hero-copy"><span className="eyebrow">{server === "tr" ? "🇹🇷 TÜRKİYE SUNUCUSU" : "🇸🇦 خادم المملكة العربية السعودية"}</span>
+        <h1>{title}</h1><p>{labels.intro}. {server === "tr" ? "Kurallar, topluluk başvuruları ve şikâyetler tek yerde." : "القوانين والتقديمات والشكاوى في مكان واحد."}</p>
+        <div className="hero-actions"><AppButton onClick={() => setTab("rules")}>{labels.rules}</AppButton><AppButton onClick={() => setTab("applications")}><span>{labels.applications}</span></AppButton></div>
+      </div>
+      <div className="hero-mark"><span>{server === "tr" ? "🇹🇷" : "🇸🇦"}</span><strong>{server === "tr" ? "TR COMMUNITY" : "KSA COMMUNITY"}</strong><small>ROLEPLAY • COMMUNITY • FAIR PLAY</small></div>
+    </section>
 
-@app.route("/rules")
-def rules():
-    lang=request.args.get("lang","tr")
-    content="<section class='card'><h2>Sunucu Kuralları</h2><p>Yetkililer aşağıdaki bölümlere kural ekleyebilir. Kurallar yayımlandığında herkes görebilir.</p>"
-    for cat in RULE_CATEGORIES:
-        content+=f"<section class='card'><h3>{cat}</h3>"
-        rows=db().execute("SELECT * FROM rules WHERE category=? ORDER BY id DESC",(cat,)).fetchall()
-        if not rows: content+="<p class='muted'>Henüz kural eklenmedi.</p>"
-        for r in rows: content+=f"<div class='item'><p>{r['body']}</p><small>Ekleyen: {r['author']}</small></div>"
-        if is_admin(): content+=f"""<form method="post" action="/rules/add"><input type="hidden" name="category" value="{cat}"><label>Yeni kural</label><textarea name="body" required></textarea><button>Kural Ekle</button></form>"""
-        content+="</section>"
-    content+="</section>"
-    return page(content,lang)
+    <nav className="nav">
+      {[[ "home",labels.home],["rules",labels.rules],["complaints",labels.complaints],["applications",labels.applications],...(isAdmin?[["admin",labels.admin]]:[])].map(([key,label]) =>
+        <button key={key} className={tab===key?"navitem active":"navitem"} onClick={() => setTab(key as string)}>{label}</button>)}
+    </nav>
 
-@app.post("/rules/add")
-@admin_required
-def add_rule():
-    body=request.form.get("body","").strip()
-    if body: db().execute("INSERT INTO rules(category,body,author) VALUES(?,?,?)",(request.form["category"],body,current_user()["username"])); db().commit(); flash("Kural eklendi.")
-    return redirect(url_for("rules"))
+    {!supabase && <div className="notice">Kurulum gerekli: Supabase projesi oluşturup .env.local dosyasını doldur.</div>}
+    {message && <div className="notice" role="status">{message}<button onClick={() => setMessage("")}>×</button></div>}
 
-@app.route("/complaints")
-def complaints():
-    lang=request.args.get("lang","tr")
-    rows=db().execute("SELECT * FROM posts WHERE kind IN ('Oyuncu Şikâyeti','Yönetici Şikâyeti','Şirketler İçerikleri') ORDER BY id DESC").fetchall()
-    content="""<section class="card"><h2>Şikâyetler ve Şirketler İçerikleri</h2><p>Şikâyet oluşturmak ve yorum yazmak için giriş yap. Kanıt bağlantısı veya açıklaması ekle; hassas kişisel bilgileri paylaşma.</p>"""
-    if current_user():
-        content+="""
-        <div class="grid">
-        <form method="post" action="/post"><h3>Oyuncu Hakkında Şikâyet</h3><input type="hidden" name="kind" value="Oyuncu Şikâyeti"><label>İşlediği suç / Şikâyet edilen kişi ismi</label><input name="target" required><label>Your Nick Name</label><input name="nick" required><label>Your Static ID</label><input name="static_id" required><label>Date</label><input name="date" type="date" required><label>Time</label><input name="time" type="time" required><label>Proof (kanıt)</label><textarea name="proof" required></textarea><button>Şikâyeti Gönder</button></form>
-        <form method="post" action="/post"><h3>Yönetici Hakkında Şikâyet</h3><input type="hidden" name="kind" value="Yönetici Şikâyeti"><label>İşlediği suç / Şikâyet edilen admin</label><input name="target" required><label>Your Nick Name</label><input name="nick" required><label>Your Static ID</label><input name="static_id" required><label>Administrator Nick Name</label><input name="admin_nick" required><label>Date</label><input name="date" type="date" required><label>Time</label><input name="time" type="time" required><label>Proof (kanıt)</label><textarea name="proof" required></textarea><button>Şikâyeti Gönder</button></form>
-        </div>
-        <form method="post" action="/post"><h3>Şirketler İçerikleri / Genel Paylaşım</h3><input type="hidden" name="kind" value="Şirketler İçerikleri"><label>Başlık</label><input name="title" required><label>İçerik</label><textarea name="body" required></textarea><button>Paylaş</button></form>
-        """
-    else: content+="<p>Şikâyet göndermek için önce giriş yap.</p>"
-    content+="<h2>Gönderiler</h2>"
-    for r in rows:
-        content+=f"<div class='item'><h3>{r['title']}</h3><p>{r['body']}</p><small>{r['kind']} · {r['author']} · {r['created']}</small><p><span class='status'>{r['status']}</span></p>"
-        if current_user():
-            content+=f"""<form method="post" action="/comment"><input type="hidden" name="post_id" value="{r['id']}"><textarea name="body" placeholder="Yorum yaz..." required></textarea><button>Yorum Ekle</button></form>"""
-        comments=db().execute("SELECT * FROM comments WHERE post_id=? ORDER BY id",(r["id"],)).fetchall()
-        for c in comments: content+=f"<p>💬 <b>{c['author']}:</b> {c['body']}</p>"
-        if is_admin():
-            content+=f"""<form method="post" action="/status"><input type="hidden" name="post_id" value="{r['id']}"><select name="status"><option>İnceleniyor</option><option>Kabul Edildi</option><option>Reddedildi</option></select><button>Durumu Kaydet</button></form>"""
-        content+="</div>"
-    content+="</section>"
-    return page(content,lang)
+    {tab === "home" && <section className="content">
+      <div className="section-heading"><div><span className="eyebrow">COMMUNITY CENTER</span><h2>{server==="tr"?"Sunucu Merkezi":"مركز الخادم"}</h2></div><p>{server==="tr"?"İhtiyacın olan bölüme geç.":"انتقل إلى القسم الذي تحتاجه."}</p></div>
+      <div className="cards">
+        <article className="tile"><span className="tile-icon">§</span><h3>{labels.rules}</h3><p>{server==="tr"?"Sunucu kurallarını oku.":"اقرأ قوانين الخادم."}</p><AppButton onClick={() => setTab("rules")}>Aç →</AppButton></article>
+        <article className="tile"><span className="tile-icon">!</span><h3>{labels.complaints}</h3><p>{server==="tr"?"Oyuncu veya yönetici hakkında bildirim oluştur.":"قدّم شكوى عن لاعب أو إداري."}</p><AppButton onClick={() => setTab("complaints")}>Aç →</AppButton></article>
+        <article className="tile"><span className="tile-icon">✦</span><h3>{labels.applications}</h3><p>{server==="tr"?"Liderlik ve ekip başvurusu gönder.":"قدّم طلب قيادة أو إدارة."}</p><AppButton onClick={() => setTab("applications")}>Aç →</AppButton></article>
+      </div>
+      <div className="section-heading compact"><div><span className="eyebrow">ORGANIZATIONS</span><h2>{server==="tr"?"Devlet Kurumları":"المؤسسات الحكومية"}</h2></div></div>
+      <div className="pills">{(server==="tr"?government:["المستشفى","الجيش","شرطة المدينة","FBI","الإعلام","البلدية"]).map(x=><span className="pill" key={x}>{x} <small>• Lider</small></span>)}</div>
+      <div className="section-heading compact"><div><span className="eyebrow">GETTO</span><h2>{server==="tr"?"Getto Organizasyonları":"منظمات الغيتو"}</h2></div></div>
+      <div className="pills">{getto.map(x=><span className="pill" key={x}>{x} <small>• Lider</small></span>)}</div>
+    </section>}
 
-@app.route("/applications")
-def applications():
-    lang=request.args.get("lang","tr")
-    rows=db().execute("SELECT * FROM posts WHERE kind LIKE '%Başvurusu' ORDER BY id DESC").fetchall()
-    content="""<section class="card"><h2>Başvurular</h2><p>Formları doldur ve gönder. Yetkililer başvuruyu inceleyip durumunu değiştirebilir.</p>"""
-    if current_user():
-        content+="""
-        <div class="grid">
-        <form method="post" action="/post"><h3>Liderlik Başvurusu</h3><input type="hidden" name="kind" value="Liderlik Başvurusu"><label>Gerçek adınız</label><input name="real_name" required><label>Yaşınız</label><input name="age" type="number" min="13" required><label>Saat diliminiz</label><input name="timezone" required><label>Günlük aktiflik süreniz</label><input name="activity" required><label>Discord kullanıcı adınız</label><input name="discord" required><label>Oyun içi isminiz</label><input name="game_name" required><label>Kalıcı oyuncu ID’niz</label><input name="player_id" required><label>Organizasyon</label><select name="organization">""" + "".join(f"<option>{o}</option>" for o in LEADER_ORGS+GETTO_ORGS) + """</select><label>Neden bu organizasyonun lideri olmak istiyorsunuz? (3 detaylı açıklama)</label><textarea name="motivation" required></textarea><label>RolePlay'i geliştirme önerileriniz</label><textarea name="ideas" required></textarea><button>Başvuruyu Gönder</button></form>
-        <form method="post" action="/post"><h3>Yönetici Başvurusu</h3><input type="hidden" name="kind" value="Yönetici Başvurusu"><label>Gerçek adınız</label><input name="real_name" required><label>Yaşınız</label><input name="age" type="number" min="13" required><label>Saat diliminiz</label><input name="timezone" required><label>Aktif olduğunuz saatler</label><input name="hours" placeholder="10:00 - 19:00" required><label>Günlük aktiflik süreniz</label><input name="activity" required><label>Discord kullanıcı adınız</label><input name="discord" required><label>Oyun içi isminiz</label><input name="game_name" required><label>Oyuncu ID’niz</label><input name="player_id" required><label>Küratörlük bölümü</label><select name="department"><option>Suç</option><option>Devlet</option></select><label>Neden yönetici olmak istiyorsunuz?</label><textarea name="motivation" required></textarea><label>Güçlü yönleriniz</label><textarea name="strengths" required></textarea><label>En büyük zayıf yönleriniz</label><textarea name="weaknesses" required></textarea><label>RP hayatından çıkıp sadece yönetici olmaya hazır mısınız?</label><textarea name="ready" required></textarea><label>Aktifliğinizi engelleyen gerçek hayat problemi var mı?</label><textarea name="availability" required></textarea><button>Başvuruyu Gönder</button></form>
-        <form method="post" action="/post"><h3>Asistan Başvurusu</h3><input type="hidden" name="kind" value="Asistan Başvurusu"><label>Gerçek adınız</label><input name="real_name" required><label>Yaşınız</label><input name="age" type="number" min="13" required><label>Saat diliminiz</label><input name="timezone" required><label>Aktif olduğunuz saatler</label><input name="hours" required><label>Günlük aktiflik süreniz</label><input name="activity" required><label>Discord kullanıcı adınız</label><input name="discord" required><label>Oyun içi isminiz</label><input name="game_name" required><label>Oyuncu ID’niz</label><input name="player_id" required><label>Neden asistan olmak istiyorsunuz?</label><textarea name="motivation" required></textarea><label>Güçlü yönleriniz</label><textarea name="strengths" required></textarea><label>En büyük zayıf yönleriniz</label><textarea name="weaknesses" required></textarea><label>Aktifliğinizi engelleyen gerçek hayat problemi var mı?</label><textarea name="availability" required></textarea><button>Başvuruyu Gönder</button></form>
-        </div>"""
-    else: content+="<p>Başvuru göndermek için giriş yapmalısın.</p>"
-    content+="<h2>Başvuruların Durumu</h2>"
-    for r in rows:
-        content+=f"<div class='item'><h3>{r['title']}</h3><p>{r['body']}</p><small>{r['author']} · {r['created']}</small><p><span class='status'>{r['status']}</span></p>"
-        if is_admin(): content+=f"""<form method="post" action="/status"><input type="hidden" name="post_id" value="{r['id']}"><select name="status"><option>İnceleniyor</option><option>Kabul Edildi</option><option>Reddedildi</option></select><button>Durumu Kaydet</button></form>"""
-        content+="</div>"
-    content+="</section>"
-    return page(content,lang)
+    {tab === "rules" && <section className="content"><div className="section-heading"><div><span className="eyebrow">SERVER POLICIES</span><h2>{labels.rules}</h2></div><p>{server==="tr"?"Kuralları yetkililer düzenleyebilir.":"يمكن للإدارة تعديل القوانين."}</p></div>
+      <div className="rule-list">{currentRules.map((name,i) => {
+        const saved = rules.find(r=>r.title===name);
+        return <article className="rule" key={name}><div className="rule-number">0{i+1}</div><div><h3>{name}</h3><p>{saved?.body || (server==="tr"?"Bu bölümün içeriği henüz eklenmedi. Yetkili ekip SQL üzerinden kural ekleyebilir.":"لم تتم إضافة محتوى هذا القسم بعد. يمكن للإدارة إضافة القوانين من قاعدة البيانات.")}</p></div></article>;
+      })}</div>
+      <h3>{server==="tr"?"Şirketler":"الشركات"}</h3><p className="muted">{server==="tr"?"Şirket içerikleri ve organizasyon açıklamaları bu alanda yayınlanabilir.":"يمكن نشر تفاصيل الشركات والمنظمات هنا."}</p>
+    </section>}
 
-@app.route("/organizations")
-def organizations():
-    lang=request.args.get("lang","tr")
-    content="<section class='card'><h2>Devlet Kurumları</h2><div class='grid'>"
-    for org in LEADER_ORGS:
-        content+=f"<div class='card'><h3>{org}</h3><p>Lider duyuruları ve kurum paylaşımları.</p>"
-        if current_user() and (is_admin() or session.get("leader_org")==org):
-            content+=f"""<form method="post" action="/post"><input type="hidden" name="kind" value="Kurum Lideri Paylaşımı"><input type="hidden" name="organization" value="{org}"><label>Başlık</label><input name="title" required><label>İçerik</label><textarea name="body" required></textarea><button>Paylaş</button></form>"""
-        content+="</div>"
-    content+="</div><h2>Getto</h2><div class='grid'>"
-    for org in GETTO_ORGS:
-        content+=f"<div class='card'><h3>{org}</h3><p>Yalnızca ilgili lider ve yetkililer paylaşım yapabilir.</p></div>"
-    content+="</div><p class='muted'>Not: Liderlik paylaşım izni, güvenli kullanım için yönetici panelinden gerçek kullanıcıya atanmalıdır.</p></section>"
-    posts=db().execute("SELECT * FROM posts WHERE kind='Kurum Lideri Paylaşımı' ORDER BY id DESC").fetchall()
-    for r in posts: content+=f"<section class='card'><h3>{r['title']}</h3><p>{r['body']}</p><small>{r['category']} · {r['author']}</small></section>"
-    return page(content,lang)
+    {tab === "complaints" && <section className="content"><div className="section-heading"><div><span className="eyebrow">REPORT CENTER</span><h2>{labels.complaints}</h2></div><span className="counter">{complaints.length} kayıt</span></div>
+      {user ? <form className="panel formgrid" onSubmit={submitComplaint}>
+        <h3 className="full">{labels.newComplaint}</h3>
+        <label>{isAr?"نوع الشكوى":"Şikâyet türü"}<select value={complaintType} onChange={e=>setComplaintType(e.target.value)}><option value="player">{labels.player}</option><option value="admin">{labels.adminComplaint}</option></select></label>
+        <label>{labels.accused}<input required value={form.accused||""} onChange={e=>setForm({...form,accused:e.target.value})}/></label>
+        <label>{labels.author}<input required value={form.author||""} onChange={e=>setForm({...form,author:e.target.value})}/></label>
+        <label>{labels.staticId}<input required value={form.static_id||""} onChange={e=>setForm({...form,static_id:e.target.value})}/></label>
+        {complaintType==="admin" && <label>{isAr?"اسم الإداري":"Şikâyet edilen admin"}<input required value={form.admin_name||""} onChange={e=>setForm({...form,accused:e.target.value,admin_name:e.target.value})}/></label>}
+        <label>{labels.date}<input type="date" required value={form.date||""} onChange={e=>setForm({...form,date:e.target.value})}/></label>
+        <label>{labels.time}<input type="time" required value={form.time||""} onChange={e=>setForm({...form,time:e.target.value})}/></label>
+        <label className="full">{labels.details}<textarea required rows={4} value={form.details||""} onChange={e=>setForm({...form,details:e.target.value})}/></label>
+        <label className="full">{labels.evidence}<input type="url" placeholder="https://..." value={form.evidence||""} onChange={e=>setForm({...form,evidence:e.target.value})}/></label>
+        <div className="full"><AppButton type="submit">{labels.submit}</AppButton></div>
+      </form> : <div className="panel"><p>{server==="tr"?"Şikâyet göndermek için giriş yap.":"سجّل الدخول لإرسال شكوى."} <a href="#auth">{labels.login}</a></p></div>}
+      <div className="stack">{complaints.map(c=><article className="record" key={c.id}><div className="record-top"><span className="tag">{c.category==="admin"?labels.adminComplaint:labels.player}</span><span className={"status "+c.status}>{c.status==="accepted"?labels.accepted:c.status==="rejected"?labels.rejected:labels.pending}</span></div><h3>{c.accused_name}</h3><p>{c.details}</p><small>{c.author_name} · ID {c.static_id} · {c.complaint_date} {c.complaint_time}</small>{c.evidence_url&&<p><a href={c.evidence_url} target="_blank" rel="noreferrer">Kanıtı aç</a></p>}
+        {canReview&&<div className="record-actions"><AppButton onClick={()=>setStatus("complaints",c.id,"accepted")}>{labels.accept}</AppButton><AppButton onClick={()=>setStatus("complaints",c.id,"rejected")}>{labels.reject}</AppButton></div>}</article>)}</div>
+      {!complaints.length&&<p className="muted">{labels.noItems}</p>}
+    </section>}
 
-@app.post("/post")
-@login_required
-def create_post():
-    user=current_user(); kind=request.form.get("kind","")
-    fields=[]
-    for key,label in [
-        ("target","Hedef"),("nick","Your Nick Name"),("static_id","Your Static ID"),
-        ("admin_nick","Administrator Nick Name"),("date","Date"),("time","Time"),("proof","Proof"),
-        ("real_name","Gerçek ad"),("age","Yaş"),("timezone","Saat dilimi"),("activity","Aktiflik"),
-        ("discord","Discord"),("game_name","Oyun içi isim"),("player_id","Oyuncu ID"),
-        ("organization","Organizasyon"),("motivation","Motivasyon"),("ideas","Öneriler"),
-        ("hours","Aktif saatler"),("department","Bölüm"),("strengths","Güçlü yönler"),
-        ("weaknesses","Zayıf yönler"),("ready","Yönetici olmaya hazır mı"),("availability","Aktiflik durumu"),
-        ("title","Başlık"),("body","İçerik")]:
-        val=request.form.get(key,"").strip()
-        if val: fields.append(f"{label}: {val}")
-    title=request.form.get("title") or request.form.get("target") or kind
-    body="\n\n".join(fields)
-    category=request.form.get("organization","Genel")
-    if kind=="Kurum Lideri Paylaşımı" and not is_admin() and session.get("leader_org")!=category:
-        flash("Bu kurumda paylaşım yapma yetkin yok."); return redirect(url_for("organizations"))
-    db().execute("INSERT INTO posts(kind,category,title,body,author) VALUES(?,?,?,?,?)",(kind,category,title,body,user["username"]))
-    db().commit(); flash("Gönderin kaydedildi.")
-    return redirect(url_for("applications" if "Başvurusu" in kind else "organizations" if kind=="Kurum Lideri Paylaşımı" else "complaints"))
+    {tab === "applications" && <section className="content"><div className="section-heading"><div><span className="eyebrow">JOIN THE TEAM</span><h2>{labels.applications}</h2></div></div>
+      {user ? <form className="panel formgrid" onSubmit={submitApplication}><h3 className="full">{labels.newApplication}</h3>
+        <label className="full">{isAr?"نوع الطلب":"Başvuru türü"}<select value={appType} onChange={e=>{setAppType(e.target.value);setForm({});}}><option value="leadership">{labels.leadership}</option><option value="administrator">{labels.administrator}</option><option value="assistant">{labels.assistant}</option></select></label>
+        {appQuestions[appType].map((q,i)=><label key={q} className={q.length>45?"full":""}>{i+1}. {q}<textarea required rows={q.length>45?3:1} value={form[q]||""} onChange={e=>setForm({...form,[q]:e.target.value})}/></label>)}
+        <div className="full"><AppButton type="submit">{labels.submit}</AppButton></div>
+      </form> : <div className="panel"><p>{server==="tr"?"Başvuru göndermek için giriş yap.":"سجّل الدخول لإرسال طلب."} <a href="#auth">{labels.login}</a></p></div>}
+      <div className="stack">{applications.map(a=><article className="record" key={a.id}><div className="record-top"><span className="tag">{a.type}</span><span className={"status "+a.status}>{a.status==="accepted"?labels.accepted:a.status==="rejected"?labels.rejected:labels.pending}</span></div><h3>{a.applicant_name}</h3><small>{new Date(a.created_at).toLocaleString()}</small>{canReview&&<div className="record-actions"><AppButton onClick={()=>setStatus("applications",a.id,"accepted")}>{labels.accept}</AppButton><AppButton onClick={()=>setStatus("applications",a.id,"rejected")}>{labels.reject}</AppButton></div>}</article>)}</div>
+      {!applications.length&&<p className="muted">{labels.noItems}</p>}
+    </section>}
 
-@app.post("/comment")
-@login_required
-def comment():
-    body=request.form.get("body","").strip()
-    if body:
-        db().execute("INSERT INTO comments(post_id,author,body) VALUES(?,?,?)",(request.form["post_id"],current_user()["username"],body)); db().commit()
-    return redirect(request.referrer or url_for("complaints"))
-
-@app.post("/status")
-@admin_required
-def status():
-    db().execute("UPDATE posts SET status=? WHERE id=?",(request.form["status"],request.form["post_id"])); db().commit()
-    flash("Durum güncellendi."); return redirect(request.referrer or url_for("home"))
-
-@app.route("/admin")
-@admin_required
-def admin_panel():
-    users=db().execute("SELECT id,username,role FROM users ORDER BY id").fetchall()
-    content="<section class='card'><h2>Yönetim Paneli</h2><p>Üye rütbelerini buradan atayabilirsin. İlk yönetici, Render ortam değişkeniyle güvenli biçimde kurulmalıdır.</p>"
-    for u in users:
-        content+=f"""<div class='item'><b>{u['username']}</b> — {u['role']}<form method="post" action="/admin/role"><input type="hidden" name="user_id" value="{u['id']}"><select name="role">"""
-        for role in ROLES: content+=f"<option {'selected' if role==u['role'] else ''}>{role}</option>"
-        content+="""</select><button>Rütbeyi Kaydet</button></form></div>"""
-    content+="</section>"
-    return page(content)
-
-@app.post("/admin/role")
-@admin_required
-def set_role():
-    db().execute("UPDATE users SET role=? WHERE id=?",(request.form["role"],request.form["user_id"])); db().commit()
-    flash("Kullanıcı rütbesi güncellendi."); return redirect(url_for("admin_panel"))
-
-# First admin bootstrap: set ADMIN_USERNAME and ADMIN_PASSWORD in Render Environment.
-@app.cli.command("bootstrap-admin")
-def bootstrap_admin():
-    username=os.environ.get("ADMIN_USERNAME")
-    password=os.environ.get("ADMIN_PASSWORD")
-    if not username or not password:
-        print("Set ADMIN_USERNAME and ADMIN_PASSWORD environment variables first."); return
-    with app.app_context():
-        init_db()
-        with sqlite3.connect(DB) as con:
-            con.execute("INSERT OR IGNORE INTO users(username,password_hash,role) VALUES(?,?,?)",
-                        (username,generate_password_hash(password),"Project Manager"))
-            con.commit()
-    print("Admin account created or already exists.")
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    {tab === "admin" && isAdmin && <section className="content"><div className="section-heading"><div><span className="eyebrow">STAFF ONLY</span><h2>{labels.admin}</h2></div></div>
+      <div className="panel"><h3>{labels.role}</h3><p>{profile?.role}</p><p className="muted">Rol atama işlemi yalnızca Project Manager tarafından yapılabilir. Kullanıcı ID's
