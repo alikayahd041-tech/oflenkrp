@@ -2,7 +2,7 @@ import os
 import json
 from datetime import datetime
 from functools import wraps
-from flask import Flask, render_template_string, request, redirect, url_for, flash, abort
+from flask import Flask, request, redirect, url_for, flash, abort, render_template_string
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -83,7 +83,6 @@ class Application(db.Model):
     applicant_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     applicant = db.relationship('User', backref='applications')
     status = db.Column(db.String(20), default='Beklemede')
-    admin_note = db.Column(db.Text, default='')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Complaint(db.Model):
@@ -93,21 +92,20 @@ class Complaint(db.Model):
     complainant_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     complainant = db.relationship('User', backref='complaints')
     status = db.Column(db.String(20), default='Beklemede')
-    admin_note = db.Column(db.Text, default='')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 @login_manager.user_loader
 def load_user(uid): return User.query.get(int(uid))
 
 # ============================================================
-# HTML ŞABLONU (BASE)
+# HTML & CSS ŞABLONU (TEK PARÇA - HATASIZ)
 # ============================================================
 BASE_HTML = """
 <!DOCTYPE html>
 <html lang="tr">
 <head>
 <meta charset="UTF-8">
-<title>{% block title %}Of LENK RP{% endblock %}</title>
+<title>Of LENK RP</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
@@ -144,44 +142,40 @@ label{display:block;font-weight:600;margin-bottom:5px;color:#34495e;}
 table{width:100%;border-collapse:collapse;}
 th,td{padding:12px;text-align:left;border-bottom:1px solid #eee;}
 th{background:#f8f9fa;color:#1e3c72;}
-.status-Beklemede{color:#f39c12;font-weight:bold;}
-.status-Kabul{color:#27ae60;font-weight:bold;}
-.status-Red{color:#e74c3c;font-weight:bold;}
 .post-item{padding:15px;background:#f8f9fa;border-radius:8px;margin-bottom:12px;border-left:4px solid #2a5298;}
 .post-item h4{color:#1e3c72;margin-bottom:8px;}
 .post-meta{font-size:12px;color:#7f8c8d;margin-top:8px;}
 .hero{background:linear-gradient(135deg,#1e3c72,#2a5298);color:#fff;padding:60px 30px;border-radius:15px;text-align:center;margin-bottom:30px;}
 .hero h1{font-size:36px;margin-bottom:15px;}
 .hero p{font-size:18px;opacity:0.9;}
-h3.section{color:#1e3c72;margin:20px 0 10px;border-bottom:2px solid #eaeaea;padding-bottom:5px;}
 </style>
 </head>
 <body>
 <nav>
 <div class="logo">🎮 Of LENK RP</div>
 <ul>
-<li><a href="{{ url_for('index') }}">Ana Sayfa</a></li>
-<li><a href="{{ url_for('rules') }}">Kurallar</a></li>
-<li><a href="{{ url_for('companies') }}">Şirketler</a></li>
-<li><a href="{{ url_for('government') }}">Devlet</a></li>
-<li><a href="{{ url_for('ghetto') }}">Getto</a></li>
-<li><a href="{{ url_for('applications') }}">Başvurular</a></li>
-<li><a href="{{ url_for('complaints') }}">Şikayetler</a></li>
+<li><a href="/">Ana Sayfa</a></li>
+<li><a href="/rules">Kurallar</a></li>
+<li><a href="/companies">Şirketler</a></li>
+<li><a href="/government">Devlet</a></li>
+<li><a href="/ghetto">Getto</a></li>
+<li><a href="/applications">Başvurular</a></li>
+<li><a href="/complaints">Şikayetler</a></li>
 {% if current_user.is_authenticated and current_user.is_admin %}
-<li><a href="{{ url_for('admin_panel') }}">Admin</a></li>
+<li><a href="/admin">Admin</a></li>
 {% endif %}
 {% if current_user.is_authenticated and current_user.role_level >= 80 %}
-<li><a href="{{ url_for('roles_manage') }}">Rol Yönet</a></li>
+<li><a href="/admin/roles">Rol Yönet</a></li>
 {% endif %}
 </ul>
 <div class="user-info">
 {% if current_user.is_authenticated %}
 <span>👤 {{ current_user.username }}</span>
 <span class="badge">{{ current_user.role }}</span>
-<a href="{{ url_for('logout') }}" class="btn btn-danger btn-sm">Çıkış</a>
+<a href="/logout" class="btn btn-danger btn-sm">Çıkış</a>
 {% else %}
-<a href="{{ url_for('login') }}" class="btn btn-primary btn-sm">Giriş</a>
-<a href="{{ url_for('register') }}" class="btn btn-success btn-sm">Kayıt</a>
+<a href="/login" class="btn btn-primary btn-sm">Giriş</a>
+<a href="/register" class="btn btn-success btn-sm">Kayıt</a>
 {% endif %}
 </div>
 </nav>
@@ -196,39 +190,40 @@ h3.section{color:#1e3c72;margin:20px 0 10px;border-bottom:2px solid #eaeaea;padd
 """
 
 # ============================================================
-# ROUTE'LAR (SAYFALAR)
+# ROUTE'LAR
 # ============================================================
 @app.route('/')
 def index():
     latest = Post.query.order_by(Post.created_at.desc()).limit(5).all()
-    return render_template_string(BASE_HTML + """
-{% block content %}
-<div class="hero">
-<h1>🎮 Of LENK RP Forum</h1>
-<p>Sunucu Kuralları • Başvurular • Şikayetler • Devlet • Getto</p>
-</div>
-<div class="grid">
-<a href="{{ url_for('rules') }}" class="card-link"><h3>📜 Kurallar</h3><p>Genel, Devlet, Liderlik ve Yeşil Bölge kuralları</p></a>
-<a href="{{ url_for('companies') }}" class="card-link"><h3>🏢 Şirketler</h3><p>Şirket içerikleri</p></a>
-<a href="{{ url_for('government') }}" class="card-link"><h3>🏛️ Devlet Kurumları</h3><p>Hastane, Ordu, Polis, FBI, Medya, Belediye</p></a>
-<a href="{{ url_for('ghetto') }}" class="card-link"><h3>⚔️ Getto</h3><p>Fangs, Wolves, Rawens</p></a>
-<a href="{{ url_for('applications') }}" class="card-link"><h3>📝 Başvurular</h3><p>Liderlik, Yönetici, Asistan</p></a>
-<a href="{{ url_for('complaints') }}" class="card-link"><h3>⚠️ Şikayetler</h3><p>Oyuncu ve Yönetici şikayetleri</p></a>
-</div>
-<div class="card" style="margin-top:30px;">
-<h2>📢 Son Paylaşımlar</h2>
-{% if latest_posts %}
-{% for p in latest_posts %}
-<div class="post-item">
-<h4>{{ p.title }}</h4>
-<p>{{ p.content[:200] }}{% if p.content|length > 200 %}...{% endif %}</p>
-<div class="post-meta">👤 {{ p.author.username }} • {{ p.created_at.strftime('%d.%m.%Y %H:%M') }}</div>
-</div>
-{% endfor %}
-{% else %}<p>Henüz paylaşım yok.</p>{% endif %}
-</div>
-{% endblock %}
-""", latest_posts=latest)
+    html = BASE_HTML + """
+    {% block content %}
+    <div class="hero">
+    <h1>🎮 Of LENK RP Forum</h1>
+    <p>Sunucu Kuralları • Başvurular • Şikayetler • Devlet • Getto</p>
+    </div>
+    <div class="grid">
+    <a href="/rules" class="card-link"><h3>📜 Kurallar</h3><p>Genel, Devlet, Liderlik ve Yeşil Bölge kuralları</p></a>
+    <a href="/companies" class="card-link"><h3>🏢 Şirketler</h3><p>Şirket içerikleri</p></a>
+    <a href="/government" class="card-link"><h3>🏛️ Devlet Kurumları</h3><p>Hastane, Ordu, Polis, FBI, Medya, Belediye</p></a>
+    <a href="/ghetto" class="card-link"><h3>⚔️ Getto</h3><p>Fangs, Wolves, Rawens</p></a>
+    <a href="/applications" class="card-link"><h3>📝 Başvurular</h3><p>Liderlik, Yönetici, Asistan</p></a>
+    <a href="/complaints" class="card-link"><h3>⚠️ Şikayetler</h3><p>Oyuncu ve Yönetici şikayetleri</p></a>
+    </div>
+    <div class="card" style="margin-top:30px;">
+    <h2>📢 Son Paylaşımlar</h2>
+    {% if latest %}
+    {% for p in latest %}
+    <div class="post-item">
+    <h4>{{ p.title }}</h4>
+    <p>{{ p.content[:200] }}{% if p.content|length > 200 %}...{% endif %}</p>
+    <div class="post-meta">👤 {{ p.author.username }} • {{ p.created_at.strftime('%d.%m.%Y %H:%M') }}</div>
+    </div>
+    {% endfor %}
+    {% else %}<p>Henüz paylaşım yok.</p>{% endif %}
+    </div>
+    {% endblock %}
+    """
+    return render_template_string(html, latest=latest)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -236,20 +231,21 @@ def login():
         u = User.query.filter_by(username=request.form.get('username')).first()
         if u and u.check_password(request.form.get('password')):
             login_user(u)
-            return redirect(url_for('index'))
+            return redirect('/')
         flash('Hatalı giriş.', 'danger')
-    return render_template_string(BASE_HTML + """
-{% block content %}
-<div class="card" style="max-width:450px;margin:50px auto;">
-<h2>🔐 Giriş Yap</h2>
-<form method="POST">
-<label>Kullanıcı Adı</label><input type="text" name="username" required>
-<label>Şifre</label><input type="password" name="password" required>
-<button class="btn btn-primary" type="submit" style="width:100%;">Giriş Yap</button>
-</form>
-</div>
-{% endblock %}
-""")
+    html = BASE_HTML + """
+    {% block content %}
+    <div class="card" style="max-width:450px;margin:50px auto;">
+    <h2>🔐 Giriş Yap</h2>
+    <form method="POST">
+    <label>Kullanıcı Adı</label><input type="text" name="username" required>
+    <label>Şifre</label><input type="password" name="password" required>
+    <button class="btn btn-primary" type="submit" style="width:100%;">Giriş Yap</button>
+    </form>
+    </div>
+    {% endblock %}
+    """
+    return render_template_string(html)
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -258,50 +254,92 @@ def register():
             u = User(username=request.form.get('username'), static_id=request.form.get('static_id'))
             u.set_password(request.form.get('password'))
             db.session.add(u); db.session.commit()
-            return redirect(url_for('login'))
+            return redirect('/login')
         flash('Kullanıcı adı alınmış.', 'danger')
-    return render_template_string(BASE_HTML + """
-{% block content %}
-<div class="card" style="max-width:450px;margin:50px auto;">
-<h2>📝 Kayıt Ol</h2>
-<form method="POST">
-<label>Kullanıcı Adı</label><input type="text" name="username" required>
-<label>Statik ID</label><input type="text" name="static_id">
-<label>Şifre</label><input type="password" name="password" required>
-<button class="btn btn-success" type="submit" style="width:100%;">Kayıt Ol</button>
-</form>
-</div>
-{% endblock %}
-""")
+    html = BASE_HTML + """
+    {% block content %}
+    <div class="card" style="max-width:450px;margin:50px auto;">
+    <h2>📝 Kayıt Ol</h2>
+    <form method="POST">
+    <label>Kullanıcı Adı</label><input type="text" name="username" required>
+    <label>Statik ID</label><input type="text" name="static_id">
+    <label>Şifre</label><input type="password" name="password" required>
+    <button class="btn btn-success" type="submit" style="width:100%;">Kayıt Ol</button>
+    </form>
+    </div>
+    {% endblock %}
+    """
+    return render_template_string(html)
 
 @app.route('/logout')
 def logout():
     logout_user()
-    return redirect(url_for('index'))
+    return redirect('/')
 
-# ----- KURALLAR -----
 @app.route('/rules')
 def rules():
     posts = Post.query.filter_by(category='rules').order_by(Post.created_at.desc()).all()
-    return render_template_string(BASE_HTML + """
-{% block content %}
-<div class="card">
-<h2>📜 Kurallar</h2>
-{% if current_user.is_authenticated and current_user.is_admin %}
-<a href="{{ url_for('new_post', cat='rules') }}" class="btn btn-primary" style="margin-bottom:15px;">+ Yeni Kural</a>
-{% endif %}
-{% for p in posts %}
-<div class="post-item">
-<h4>[{{ p.subcategory }}] {{ p.title }}</h4>
-<p>{{ p.content }}</p>
-<div class="post-meta">👤 {{ p.author.username }} • {{ p.created_at.strftime('%d.%m.%Y') }}</div>
-</div>
-{% else %}<p>Kural yok.</p>{% endfor %}
-</div>
-{% endblock %}
-""", posts=posts)
+    html = BASE_HTML + """
+    {% block content %}
+    <div class="card">
+    <h2>📜 Kurallar</h2>
+    {% if current_user.is_authenticated and current_user.is_admin %}
+    <a href="/post/new/rules" class="btn btn-primary" style="margin-bottom:15px;">+ Yeni Kural</a>
+    {% endif %}
+    {% for p in posts %}
+    <div class="post-item">
+    <h4>[{{ p.subcategory }}] {{ p.title }}</h4>
+    <p>{{ p.content }}</p>
+    <div class="post-meta">👤 {{ p.author.username }} • {{ p.created_at.strftime('%d.%m.%Y') }}</div>
+    </div>
+    {% else %}<p>Kural yok.</p>{% endfor %}
+    </div>
+    {% endblock %}
+    """
+    return render_template_string(html, posts=posts)
 
-# ----- GENEL POST EKLEME -----
+@app.route('/companies')
+def companies():
+    posts = Post.query.filter_by(category='companies').order_by(Post.created_at.desc()).all()
+    html = BASE_HTML + """
+    {% block content %}
+    <div class="card">
+    <h2>🏢 Şirketler</h2>
+    {% if current_user.is_authenticated and current_user.is_admin %}<a href="/post/new/companies" class="btn btn-primary">+ Ekle</a>{% endif %}
+    {% for p in posts %}<div class="post-item"><h4>{{ p.title }}</h4><p>{{ p.content }}</p></div>{% else %}<p>Boş.</p>{% endfor %}
+    </div>
+    {% endblock %}
+    """
+    return render_template_string(html, posts=posts)
+
+@app.route('/government')
+def government():
+    posts = Post.query.filter_by(category='government').order_by(Post.created_at.desc()).all()
+    html = BASE_HTML + """
+    {% block content %}
+    <div class="card">
+    <h2>🏛️ Devlet</h2>
+    {% if current_user.is_authenticated and current_user.role_level >= 30 %}<a href="/post/new/government" class="btn btn-primary">+ Ekle</a>{% endif %}
+    {% for p in posts %}<div class="post-item"><h4>[{{ p.subcategory }}] {{ p.title }}</h4><p>{{ p.content }}</p></div>{% else %}<p>Boş.</p>{% endfor %}
+    </div>
+    {% endblock %}
+    """
+    return render_template_string(html, posts=posts)
+
+@app.route('/ghetto')
+def ghetto():
+    posts = Post.query.filter_by(category='ghetto').order_by(Post.created_at.desc()).all()
+    html = BASE_HTML + """
+    {% block content %}
+    <div class="card">
+    <h2>⚔️ Getto</h2>
+    {% if current_user.is_authenticated and current_user.role_level >= 30 %}<a href="/post/new/ghetto" class="btn btn-primary">+ Ekle</a>{% endif %}
+    {% for p in posts %}<div class="post-item"><h4>[{{ p.subcategory }}] {{ p.title }}</h4><p>{{ p.content }}</p></div>{% else %}<p>Boş.</p>{% endfor %}
+    </div>
+    {% endblock %}
+    """
+    return render_template_string(html, posts=posts)
+
 @app.route('/post/new/<cat>', methods=['GET', 'POST'])
 @requires_role('Junior Administrator')
 def new_post(cat):
@@ -310,7 +348,7 @@ def new_post(cat):
                  title=request.form.get('title'), content=request.form.get('content'),
                  author_id=current_user.id)
         db.session.add(p); db.session.commit()
-        return redirect(url_for(cat))
+        return redirect('/' + cat)
     
     cats = {
         'rules': ['Genel Kurallar', 'Devlet Kuralları', 'Liderlik Kuralları', 'Yeşil Bölge'],
@@ -318,86 +356,47 @@ def new_post(cat):
         'government': ['Hastane', 'Ordu', 'Polis', 'FBI', 'Medya', 'Belediye'],
         'ghetto': ['Fangs', 'Wolves', 'Rawens']
     }
-    return render_template_string(BASE_HTML + """
-{% block content %}
-<div class="card" style="max-width:700px;margin:0 auto;">
-<h2>Yeni İçerik Ekle ({{ cat }})</h2>
-<form method="POST">
-<label>Kategori</label>
-<select name="subcategory">{% for c in cats %}<option>{{ c }}</option>{% endfor %}</select>
-<label>Başlık</label><input type="text" name="title" required>
-<label>İçerik</label><textarea name="content" rows="8" required></textarea>
-<button class="btn btn-primary" type="submit">Kaydet</button>
-<a href="{{ url_for(cat) }}" class="btn btn-warning">İptal</a>
-</form>
-</div>
-{% endblock %}
-""", cat=cat, cats=cats[cat])
+    html = BASE_HTML + """
+    {% block content %}
+    <div class="card" style="max-width:700px;margin:0 auto;">
+    <h2>Yeni İçerik Ekle</h2>
+    <form method="POST">
+    <label>Kategori</label>
+    <select name="subcategory">{% for c in cats %}<option>{{ c }}</option>{% endfor %}</select>
+    <label>Başlık</label><input type="text" name="title" required>
+    <label>İçerik</label><textarea name="content" rows="8" required></textarea>
+    <button class="btn btn-primary" type="submit">Kaydet</button>
+    <a href="/{{ cat }}" class="btn btn-warning">İptal</a>
+    </form>
+    </div>
+    {% endblock %}
+    """
+    return render_template_string(html, cat=cat, cats=cats[cat])
 
-# ----- ŞİRKETLER & DEVLET & GHETTO (Listeleme) -----
-@app.route('/companies')
-def companies():
-    posts = Post.query.filter_by(category='companies').order_by(Post.created_at.desc()).all()
-    return render_template_string(BASE_HTML + """
-{% block content %}
-<div class="card">
-<h2>🏢 Şirketler</h2>
-{% if current_user.is_authenticated and current_user.is_admin %}<a href="{{ url_for('new_post', cat='companies') }}" class="btn btn-primary">+ Ekle</a>{% endif %}
-{% for p in posts %}<div class="post-item"><h4>{{ p.title }}</h4><p>{{ p.content }}</p></div>{% else %}<p>Boş.</p>{% endfor %}
-</div>
-{% endblock %}
-""", posts=posts)
-
-@app.route('/government')
-def government():
-    posts = Post.query.filter_by(category='government').order_by(Post.created_at.desc()).all()
-    return render_template_string(BASE_HTML + """
-{% block content %}
-<div class="card">
-<h2>🏛️ Devlet</h2>
-{% if current_user.is_authenticated and current_user.role_level >= 30 %}<a href="{{ url_for('new_post', cat='government') }}" class="btn btn-primary">+ Ekle</a>{% endif %}
-{% for p in posts %}<div class="post-item"><h4>[{{ p.subcategory }}] {{ p.title }}</h4><p>{{ p.content }}</p></div>{% else %}<p>Boş.</p>{% endfor %}
-</div>
-{% endblock %}
-""", posts=posts)
-
-@app.route('/ghetto')
-def ghetto():
-    posts = Post.query.filter_by(category='ghetto').order_by(Post.created_at.desc()).all()
-    return render_template_string(BASE_HTML + """
-{% block content %}
-<div class="card">
-<h2>⚔️ Getto</h2>
-{% if current_user.is_authenticated and current_user.role_level >= 30 %}<a href="{{ url_for('new_post', cat='ghetto') }}" class="btn btn-primary">+ Ekle</a>{% endif %}
-{% for p in posts %}<div class="post-item"><h4>[{{ p.subcategory }}] {{ p.title }}</h4><p>{{ p.content }}</p></div>{% else %}<p>Boş.</p>{% endfor %}
-</div>
-{% endblock %}
-""", posts=posts)
-
-# ----- BAŞVURULAR -----
 @app.route('/applications')
 def applications():
     apps = Application.query.order_by(Application.created_at.desc()).all()
-    return render_template_string(BASE_HTML + """
-{% block content %}
-<div class="card">
-<h2>📝 Başvurular</h2>
-<a href="{{ url_for('new_application', app_type='liderlik') }}" class="btn btn-primary">Liderlik</a>
-<a href="{{ url_for('new_application', app_type='yonetici') }}" class="btn btn-primary">Yönetici</a>
-<a href="{{ url_for('new_application', app_type='asistan') }}" class="btn btn-primary">Asistan</a>
-<table style="margin-top:20px;">
-{% for a in apps %}
-<tr><td>{{ a.applicant.username }}</td><td>{{ a.type }}</td><td>{{ a.status }}</td>
-<td>{% if current_user.is_authenticated and current_user.is_admin %}
-<form method="POST" action="{{ url_for('review_app', app_id=a.id) }}" style="display:flex;gap:5px;">
-<select name="status"><option>Kabul</option><option>Red</option></select>
-<button class="btn btn-sm btn-primary">Onayla</button>
-</form>{% endif %}</td></tr>
-{% endfor %}
-</table>
-</div>
-{% endblock %}
-""", apps=apps)
+    html = BASE_HTML + """
+    {% block content %}
+    <div class="card">
+    <h2>📝 Başvurular</h2>
+    <a href="/applications/new/liderlik" class="btn btn-primary">Liderlik</a>
+    <a href="/applications/new/yonetici" class="btn btn-primary">Yönetici</a>
+    <a href="/applications/new/asistan" class="btn btn-primary">Asistan</a>
+    <table style="margin-top:20px;">
+    {% for a in apps %}
+    <tr><td>{{ a.applicant.username }}</td><td>{{ a.type }}</td><td>{{ a.status }}</td>
+    <td>{% if current_user.is_authenticated and current_user.is_admin %}
+    <form method="POST" action="/applications/{{ a.id }}/review" style="display:flex;gap:5px;">
+    <select name="status"><option>Kabul</option><option>Red</option></select>
+    <button class="btn btn-sm btn-primary">Onayla</button>
+    </form>{% endif %}</td></tr>
+    {% endfor %}
+    </table>
+    </div>
+    {% endblock %}
+    """
+    return render_template_string(html, apps=apps)
 
 @app.route('/applications/new/<app_type>', methods=['GET', 'POST'])
 @login_required
@@ -406,25 +405,26 @@ def new_application(app_type):
         a = Application(type=app_type, data=json.dumps(request.form.to_dict()), applicant_id=current_user.id)
         db.session.add(a); db.session.commit()
         flash('Başvurunuz alındı.', 'success')
-        return redirect(url_for('applications'))
+        return redirect('/applications')
     
     fields = {
         'liderlik': ['Gerçek adınız', 'Yaşınız', 'Saat diliminiz', 'Günlük aktiflik', 'Discord', 'Oyun içi isim', 'Statik ID', 'Organizasyon', 'Neden Lider?', 'Öneriler'],
         'yonetici': ['Gerçek adınız', 'Yaşınız', 'Saat diliminiz', 'Aktif saatler', 'Günlük aktiflik', 'Discord', 'Oyun içi isim', 'Statik ID', 'Küratör (Suç/Devlet)', 'Neden Yönetici?', 'Güçlü Yönler', 'Zayıf Yönler'],
         'asistan': ['Gerçek adınız', 'Yaşınız', 'Saat diliminiz', 'Aktif saatler', 'Günlük aktiflik', 'Discord', 'Oyun içi isim', 'Statik ID', 'Neden Asistan?', 'Güçlü Yönler', 'Zayıf Yönler']
     }
-    return render_template_string(BASE_HTML + """
-{% block content %}
-<div class="card" style="max-width:700px;margin:0 auto;">
-<h2>{{ app_type|capitalize }} Başvuru Formu</h2>
-<form method="POST">
-{% for f in fields %}<label>{{ f }}</label><input type="text" name="{{ f }}" required>{% endfor %}
-<button class="btn btn-success" type="submit">Gönder</button>
-<a href="{{ url_for('applications') }}" class="btn btn-warning">İptal</a>
-</form>
-</div>
-{% endblock %}
-""", app_type=app_type, fields=fields[app_type])
+    html = BASE_HTML + """
+    {% block content %}
+    <div class="card" style="max-width:700px;margin:0 auto;">
+    <h2>Başvuru Formu</h2>
+    <form method="POST">
+    {% for f in fields %}<label>{{ f }}</label><input type="text" name="{{ f }}" required>{% endfor %}
+    <button class="btn btn-success" type="submit">Gönder</button>
+    <a href="/applications" class="btn btn-warning">İptal</a>
+    </form>
+    </div>
+    {% endblock %}
+    """
+    return render_template_string(html, app_type=app_type, fields=fields[app_type])
 
 @app.route('/applications/<int:app_id>/review', methods=['POST'])
 @requires_role('Junior Administrator')
@@ -432,19 +432,30 @@ def review_app(app_id):
     a = Application.query.get_or_404(app_id)
     a.status = request.form.get('status')
     db.session.commit()
-    return redirect(url_for('applications'))
+    return redirect('/applications')
 
-# ----- ŞİKAYETLER -----
 @app.route('/complaints')
 def complaints():
     comps = Complaint.query.order_by(Complaint.created_at.desc()).all()
-    return render_template_string(BASE_HTML + """
-{% block content %}
-<div class="card">
-<h2>⚠️ Şikayetler</h2>
-<a href="{{ url_for('new_complaint', comp_type='player') }}" class="btn btn-danger">Oyuncu Şikayeti</a>
-<a href="{{ url_for('new_complaint', comp_type='admin') }}" class="btn btn-warning">Yönetici Şikayeti</a>
-<table style="margin-top:20px;">
-{% for c in comps %}
-<tr><td>{{ c.complainant.username }}</td><td>{{ c.type }}</td><td>{{ c.status }}</td>
-<td>{% if cur
+    html = BASE_HTML + """
+    {% block content %}
+    <div class="card">
+    <h2>⚠️ Şikayetler</h2>
+    <a href="/complaints/new/player" class="btn btn-danger">Oyuncu Şikayeti</a>
+    <a href="/complaints/new/admin" class="btn btn-warning">Yönetici Şikayeti</a>
+    <table style="margin-top:20px;">
+    {% for c in comps %}
+    <tr><td>{{ c.complainant.username }}</td><td>{{ c.type }}</td><td>{{ c.status }}</td>
+    <td>{% if current_user.is_authenticated and current_user.is_admin %}
+    <form method="POST" action="/complaints/{{ c.id }}/review" style="display:flex;gap:5px;">
+    <select name="status"><option>Kabul</option><option>Red</option></select>
+    <button class="btn btn-sm btn-primary">Onayla</button>
+    </form>{% endif %}</td></tr>
+    {% endfor %}
+    </table>
+    </div>
+    {% endblock %}
+    """
+    return render_template_string(html, comps=comps)
+
+@app.route('/complaints/new/<comp_ty
