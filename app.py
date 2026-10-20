@@ -1,493 +1,326 @@
-import os
-import json
-from datetime import datetime
+import os, sqlite3
 from functools import wraps
-from flask import Flask, request, redirect, url_for, flash, abort, render_template_string
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from flask import Flask, request, redirect, url_for, session, flash, render_template_string, g
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'of-lenk-rp-secret-key')
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///oflenkrp.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.secret_key = os.environ.get("SECRET_KEY", "change-this-secret-before-deploying")
+DB = os.environ.get("DATABASE_PATH", "forum.db")
 
-db = SQLAlchemy(app)
-login_manager = LoginManager(app)
-login_manager.login_view = 'login'
+ROLES = [
+    "Project Manager", "Deputy Project Manager", "Project Coordinator",
+    "Chief Administrator", "Deputy Chief Administrator", "Senior Administrator",
+    "Junior Administrator", "The Server Administrator", "Admin Assistant", "Member"
+]
+ADMIN_ROLES = ROLES[:-1]
+LEADER_ORGS = ["Hastane", "Ordu", "Şehir Polisi", "FBI", "Medya", "Belediye"]
+GETTO_ORGS = ["Fangs", "Wolves", "Ravens"]
+RULE_CATEGORIES = ["Genel Kurallar", "Devlet Kuralları", "Liderlik Kuralları", "Yeşil Bölge Kuralları"]
 
-ROLES = {
-    'Project Manager': 100,
-    'Deputy Project Manager': 90,
-    'Project Koordinatör': 80,
-    'Chief Administrator': 70,
-    'Deputy Chief Administrator': 60,
-    'Senior Administrator': 50,
-    'Junior Administrator': 40,
-    'The Server Administrator': 30,
-    'Admin Asistan': 20,
-    'Player': 10,
-}
+def db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DB)
+        g.db.row_factory = sqlite3.Row
+    return g.db
 
-def role_level(name):
-    return ROLES.get(name, 0)
+@app.teardown_appcontext
+def close_db(exc):
+    conn = g.pop("db", None)
+    if conn is not None:
+        conn.close()
 
-def requires_role(min_role):
-    def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            if not current_user.is_authenticated:
-                return redirect(url_for('login'))
-            if role_level(current_user.role) < role_level(min_role):
-                flash('Bu sayfaya erişim yetkiniz yok.', 'danger')
-                return redirect(url_for('index'))
-            return f(*args, **kwargs)
-        return wrapper
-    return decorator
+def init_db():
+    with sqlite3.connect(DB) as con:
+        con.execute("""CREATE TABLE IF NOT EXISTS users(
+            id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'Member',
+            lang TEXT NOT NULL DEFAULT 'tr')""")
+        con.execute("""CREATE TABLE IF NOT EXISTS posts(
+            id INTEGER PRIMARY KEY, kind TEXT NOT NULL, category TEXT NOT NULL,
+            title TEXT NOT NULL, body TEXT NOT NULL, author TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'İnceleniyor', created TEXT DEFAULT CURRENT_TIMESTAMP)""")
+        con.execute("""CREATE TABLE IF NOT EXISTS comments(
+            id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, author TEXT NOT NULL,
+            body TEXT NOT NULL, created TEXT DEFAULT CURRENT_TIMESTAMP)""")
+        con.execute("""CREATE TABLE IF NOT EXISTS rules(
+            id INTEGER PRIMARY KEY, category TEXT NOT NULL, body TEXT NOT NULL,
+            author TEXT NOT NULL, created TEXT DEFAULT CURRENT_TIMESTAMP)""")
+        con.commit()
 
-class User(UserMixin, db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    static_id = db.Column(db.String(50))
-    password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(80), default='Player')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+@app.before_request
+def setup():
+    init_db()
 
-    def set_password(self, pw): self.password_hash = generate_password_hash(pw)
-    def check_password(self, pw): return check_password_hash(self.password_hash, pw)
-    @property
-    def role_level(self): return role_level(self.role)
-    @property
-    def is_admin(self): return self.role_level >= role_level('Junior Administrator')
+def current_user():
+    if "user_id" not in session:
+        return None
+    return db().execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
 
-class Post(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    category = db.Column(db.String(50))
-    subcategory = db.Column(db.String(80))
-    title = db.Column(db.String(200), nullable=False)
-    content = db.Column(db.Text, nullable=False)
-    author_id = db.Column(db.Integer, db.ForeignKey('user.id'))
-    author = db.relationship('User', backref='posts')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+def is_admin(user=None):
+    user = user or current_user()
+    return bool(user and user["role"] in ADMIN_ROLES)
 
-class Application(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    type = db.Column(db.String(50))
-    data = db.Column(db.Text)
-    applicant_id = db.Column(db.Integer, db.ForeignKey('user.id'))
-    applicant = db.relationship('User', backref='applications')
-    status = db.Column(db.String(20), default='Beklemede')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not current_user():
+            flash("Bu işlem için giriş yapmalısın.")
+            return redirect(url_for("home"))
+        return fn(*args, **kwargs)
+    return wrapper
 
-class Complaint(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    type = db.Column(db.String(50))
-    data = db.Column(db.Text)
-    complainant_id = db.Column(db.Integer, db.ForeignKey('user.id'))
-    complainant = db.relationship('User', backref='complaints')
-    status = db.Column(db.String(20), default='Beklemede')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+def admin_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not is_admin():
+            flash("Bu alan yalnızca yetkili yöneticilere açıktır.")
+            return redirect(url_for("home"))
+        return fn(*args, **kwargs)
+    return wrapper
 
-@login_manager.user_loader
-def load_user(uid): return User.query.get(int(uid))
-
-BASE_HTML = """
-<!DOCTYPE html>
-<html lang="tr">
-<head>
-<meta charset="UTF-8">
-<title>Of LENK RP</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+PAGE = r"""
+<!doctype html><html lang="{{ 'ar' if lang=='ar' else 'tr' }}" dir="{{ 'rtl' if lang=='ar' else 'ltr' }}">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OF LENK RP Forum</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box;}
-body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f4f6fb;color:#2c3e50;min-height:100vh;}
-nav{background:linear-gradient(90deg,#1e3c72,#2a5298);padding:15px 30px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 10px rgba(0,0,0,0.15);flex-wrap:wrap;gap:10px;}
-nav .logo{color:#fff;font-size:22px;font-weight:bold;}
-nav ul{list-style:none;display:flex;gap:18px;flex-wrap:wrap;}
-nav ul li a{color:#fff;text-decoration:none;font-weight:500;transition:0.2s;font-size:14px;}
-nav ul li a:hover{color:#f1c40f;}
-.user-info{color:#fff;display:flex;align-items:center;gap:10px;font-size:14px;flex-wrap:wrap;}
-.badge{background:#f1c40f;color:#1e3c72;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:bold;}
-.container{max-width:1200px;margin:30px auto;padding:0 20px;}
-.card{background:#fff;border-radius:12px;padding:25px;box-shadow:0 4px 15px rgba(0,0,0,0.08);margin-bottom:20px;}
-.card h2{color:#1e3c72;margin-bottom:15px;}
-.btn{display:inline-block;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:bold;border:none;cursor:pointer;transition:0.2s;font-size:14px;}
-.btn-primary{background:#2a5298;color:#fff;}
-.btn-primary:hover{background:#1e3c72;}
-.btn-success{background:#27ae60;color:#fff;}
-.btn-danger{background:#e74c3c;color:#fff;}
-.btn-warning{background:#f39c12;color:#fff;}
-.btn-sm{padding:6px 12px;font-size:12px;}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;}
-.card-link{background:#fff;padding:25px;border-radius:12px;text-decoration:none;color:#2c3e50;box-shadow:0 4px 15px rgba(0,0,0,0.08);transition:0.2s;display:block;border-left:5px solid #2a5298;}
-.card-link:hover{transform:translateY(-3px);box-shadow:0 8px 20px rgba(0,0,0,0.15);}
-.card-link h3{color:#1e3c72;margin-bottom:10px;}
-.card-link p{color:#7f8c8d;font-size:14px;}
-.flash{padding:12px 20px;border-radius:8px;margin-bottom:15px;font-weight:500;}
-.flash.success{background:#d4edda;color:#155724;}
-.flash.danger{background:#f8d7da;color:#721c24;}
-.flash.info{background:#d1ecf1;color:#0c5460;}
-.flash.warning{background:#fff3cd;color:#856404;}
-input,textarea,select{width:100%;padding:10px 14px;border:1px solid #dcdde1;border-radius:8px;font-size:14px;margin-bottom:15px;font-family:inherit;}
-label{display:block;font-weight:600;margin-bottom:5px;color:#34495e;}
-table{width:100%;border-collapse:collapse;}
-th,td{padding:12px;text-align:left;border-bottom:1px solid #eee;}
-th{background:#f8f9fa;color:#1e3c72;}
-.post-item{padding:15px;background:#f8f9fa;border-radius:8px;margin-bottom:12px;border-left:4px solid #2a5298;}
-.post-item h4{color:#1e3c72;margin-bottom:8px;}
-.post-meta{font-size:12px;color:#7f8c8d;margin-top:8px;}
-.hero{background:linear-gradient(135deg,#1e3c72,#2a5298);color:#fff;padding:60px 30px;border-radius:15px;text-align:center;margin-bottom:30px;}
-.hero h1{font-size:36px;margin-bottom:15px;}
-.hero p{font-size:18px;opacity:0.9;}
-</style>
-</head>
-<body>
+:root{--bg:#080d18;--panel:#111b2d;--line:#263d5d;--blue:#1685ff;--text:#eef4ff;--muted:#aebdd2}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Arial,sans-serif}
+header{background:#0d1728;border-bottom:2px solid var(--blue);padding:20px 14px;text-align:center}
+h1{margin:0;color:#58aaff;letter-spacing:2px}header p{color:var(--muted);margin:8px 0 0}
+nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;padding:13px;background:#0b1322;position:sticky;top:0}
+a,button{cursor:pointer}a{color:#76baff;text-decoration:none}button,.btn{border:0;border-radius:7px;background:var(--blue);color:white;padding:10px 13px;font-weight:700;display:inline-block}
+button.secondary,.btn.secondary{background:#24354d}button.danger{background:#9f2d43}
+main{max-width:980px;margin:22px auto;padding:0 13px}.hero,.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:14px}
+.hero{text-align:center;padding:28px 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+h2,h3{color:#58aaff;margin-top:0}p{line-height:1.55;color:#d1dced}.muted,small{color:var(--muted)}
+input,textarea,select{width:100%;padding:11px;margin:5px 0 12px;background:#08111f;color:white;border:1px solid #344b69;border-radius:7px}
+textarea{min-height:100px;resize:vertical}label{font-size:14px;color:#c9d7e9}form{margin-top:12px}.field{margin-bottom:5px}
+.status{display:inline-block;padding:5px 8px;border-radius:20px;background:#24354d;font-size:12px}
+.item{border-top:1px solid var(--line);padding:13px 0}.actions{display:flex;gap:7px;flex-wrap:wrap}.flash{background:#18375a;padding:10px;border-radius:8px;margin:10px 0}
+footer{text-align:center;padding:24px;color:#8ea2bd}@media(max-width:500px){h1{font-size:24px}nav{position:static}}
+</style></head><body>
+<header><h1>OF LENK RP</h1><p>{{ 'المنتدى الرسمي للمجتمع' if lang=='ar' else 'Resmî Topluluk Forumu' }}</p></header>
 <nav>
-<div class="logo">🎮 Of LENK RP</div>
-<ul>
-<li><a href="{{ url_for('index') }}">Ana Sayfa</a></li>
-<li><a href="{{ url_for('rules') }}">Kurallar</a></li>
-<li><a href="{{ url_for('companies') }}">Şirketler</a></li>
-<li><a href="{{ url_for('government') }}">Devlet</a></li>
-<li><a href="{{ url_for('ghetto') }}">Getto</a></li>
-<li><a href="{{ url_for('applications') }}">Başvurular</a></li>
-<li><a href="{{ url_for('complaints') }}">Şikayetler</a></li>
-{% if current_user.is_authenticated and current_user.is_admin %}
-<li><a href="{{ url_for('admin_panel') }}">Admin</a></li>
-{% endif %}
-{% if current_user.is_authenticated and current_user.role_level >= 80 %}
-<li><a href="{{ url_for('roles_manage') }}">Rol Yönet</a></li>
-{% endif %}
-</ul>
-<div class="user-info">
-{% if current_user.is_authenticated %}
-<span>👤 {{ current_user.username }}</span>
-<span class="badge">{{ current_user.role }}</span>
-<a href="{{ url_for('logout') }}" class="btn btn-danger btn-sm">Çıkış</a>
-{% else %}
-<a href="{{ url_for('login') }}" class="btn btn-primary btn-sm">Giriş</a>
-<a href="{{ url_for('register') }}" class="btn btn-success btn-sm">Kayıt</a>
-{% endif %}
-</div>
+<a class="btn secondary" href="{{url_for('home',lang=lang)}}">{{'الرئيسية' if lang=='ar' else 'Ana Sayfa'}}</a>
+<a class="btn secondary" href="{{url_for('rules',lang=lang)}}">{{'القوانين' if lang=='ar' else 'Sunucu Kuralları'}}</a>
+<a class="btn secondary" href="{{url_for('complaints',lang=lang)}}">{{'الشكاوى' if lang=='ar' else 'Şikâyetler'}}</a>
+<a class="btn secondary" href="{{url_for('applications',lang=lang)}}">{{'التقديمات' if lang=='ar' else 'Başvurular'}}</a>
+<a class="btn secondary" href="{{url_for('organizations',lang=lang)}}">{{'المنظمات' if lang=='ar' else 'Kurumlar / Getto'}}</a>
+<a class="btn secondary" href="{{url_for('home',lang='tr')}}">🇹🇷 TR</a><a class="btn secondary" href="{{url_for('home',lang='ar')}}">🇸🇦 KSA</a>
+{% if user %}<span class="btn secondary">{{user['username']}} · {{user['role']}}</span><a class="btn" href="{{url_for('logout')}}">{{'خروج' if lang=='ar' else 'Çıkış'}}</a>{% else %}<a class="btn" href="{{url_for('home',lang=lang)}}#auth">{{'دخول / تسجيل' if lang=='ar' else 'Giriş / Kayıt'}}</a>{% endif %}
+{% if admin %}<a class="btn" href="{{url_for('admin_panel',lang=lang)}}">Yönetim Paneli</a>{% endif %}
 </nav>
-<div class="container">
-{% with messages = get_flashed_messages(with_categories=true) %}
-{% for cat, msg in messages %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}
-{% endwith %}
-{% block content %}{% endblock %}
-</div>
-</body>
-</html>
+<main>
+{% for msg in get_flashed_messages() %}<div class="flash">{{msg}}</div>{% endfor %}
+{{content|safe}}
+</main><footer>© 2026 OF LENK RP · Community Forum</footer></body></html>
 """
 
-@app.route('/')
-def index():
-    latest = Post.query.order_by(Post.created_at.desc()).limit(5).all()
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="hero">
-    <h1>🎮 Of LENK RP Forum</h1>
-    <p>Sunucu Kuralları • Başvurular • Şikayetler • Devlet • Getto</p>
-    </div>
+def page(content, lang=None):
+    user = current_user()
+    return render_template_string(PAGE, content=content, user=user, admin=is_admin(user), lang=lang or (request.args.get("lang") or (user["lang"] if user else "tr")))
+
+@app.route("/")
+def home():
+    lang=request.args.get("lang","tr")
+    arabic=lang=="ar"
+    content=f"""
+    <section class="hero"><h2>{'مرحباً بك في OF LENK RP' if arabic else 'OF LENK RP’ye Hoş Geldin!'}</h2>
+    <p>{'اختر القسم المناسب وشارك في المجتمع.' if arabic else 'Şikâyet gönder, başvuru yap, kuralları incele ve toplulukla etkileşime geç.'}</p>
+    <div class="actions" style="justify-content:center"><a class="btn" href="/complaints?lang={lang}">{'إرسال شكوى' if arabic else 'Şikâyet Gönder'}</a><a class="btn" href="/applications?lang={lang}">{'تقديم طلب' if arabic else 'Başvuru Yap'}</a></div></section>
     <div class="grid">
-    <a href="{{ url_for('rules') }}" class="card-link"><h3>📜 Kurallar</h3><p>Genel, Devlet, Liderlik, Yeşil Bölge</p></a>
-    <a href="{{ url_for('companies') }}" class="card-link"><h3>🏢 Şirketler</h3><p>Şirket içerikleri</p></a>
-    <a href="{{ url_for('government') }}" class="card-link"><h3>🏛️ Devlet Kurumları</h3><p>Hastane, Ordu, Polis, FBI</p></a>
-    <a href="{{ url_for('ghetto') }}" class="card-link"><h3>⚔️ Getto</h3><p>Fangs, Wolves, Rawens</p></a>
-    <a href="{{ url_for('applications') }}" class="card-link"><h3>📝 Başvurular</h3><p>Liderlik, Yönetici, Asistan</p></a>
-    <a href="{{ url_for('complaints') }}" class="card-link"><h3>⚠️ Şikayetler</h3><p>Oyuncu ve Yönetici</p></a>
-    </div>
-    <div class="card" style="margin-top:30px;">
-    <h2>📢 Son Paylaşımlar</h2>
-    {% if latest %}{% for p in latest %}
-    <div class="post-item">
-    <h4>{{ p.title }}</h4><p>{{ p.content[:200] }}</p>
-    <div class="post-meta">👤 {{ p.author.username }} • {{ p.created_at.strftime('%d.%m.%Y %H:%M') }}</div>
-    </div>{% endfor %}{% else %}<p>Henüz paylaşım yok.</p>{% endif %}
-    </div>
-    """), latest=latest)
+    <section class="card"><h3>{'قوانين الخادم' if arabic else '📜 Sunucu Kuralları'}</h3><p>{'القوانين العامة وقوانين الدولة والقيادة والمنطقة الخضراء.' if arabic else 'Genel, devlet, liderlik ve yeşil bölge kuralları.'}</p><a href="/rules?lang={lang}">{'عرض القوانين' if arabic else 'Kuralları Gör'}</a></section>
+    <section class="card"><h3>{'الشكاوى' if arabic else '⚖️ Şikâyet Sistemi'}</h3><p>{'قدّم شكوى وتابع حالة المراجعة.' if arabic else 'Oyuncu veya yönetici hakkında şikâyet gönder, durumunu takip et.'}</p><a href="/complaints?lang={lang}">{'افتح القسم' if arabic else 'Bölümü Aç'}</a></section>
+    <section class="card"><h3>{'التقديمات' if arabic else '📝 Başvurular'}</h3><p>{'قيادة، إدارة، ومساعد إدارة.' if arabic else 'Liderlik, yönetici ve asistan başvuruları.'}</p><a href="/applications?lang={lang}">{'قدّم الآن' if arabic else 'Başvuru Yap'}</a></section></div>
+    <section class="card" id="auth"><h2>{'دخول / تسجيل حساب' if arabic else 'Giriş / Hesap Oluştur'}</h2>
+    <p class="muted">{'أنشئ حساباً لمشاركة الشكاوى والطلبات.' if arabic else 'Şikâyet ve başvuru göndermek için hesap oluştur.'}</p>
+    <div class="grid"><form method="post" action="/register"><h3>{'إنشاء حساب' if arabic else 'Kayıt Ol'}</h3><label>Kullanıcı adı</label><input name="username" required minlength="3" maxlength="30"><label>Şifre</label><input name="password" type="password" required minlength="8"><input type="hidden" name="lang" value="{lang}"><button>Kayıt Ol</button></form>
+    <form method="post" action="/login"><h3>{'تسجيل الدخول' if arabic else 'Giriş Yap'}</h3><label>Kullanıcı adı</label><input name="username" required><label>Şifre</label><input name="password" type="password" required><input type="hidden" name="lang" value="{lang}"><button>Giriş Yap</button></form></div></section>
+    """
+    return page(content,lang)
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        u = User.query.filter_by(username=request.form.get('username')).first()
-        if u and u.check_password(request.form.get('password')):
-            login_user(u); return redirect(url_for('index'))
-        flash('Hatalı giriş.', 'danger')
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card" style="max-width:450px;margin:50px auto;">
-    <h2>🔐 Giriş Yap</h2>
-    <form method="POST">
-    <label>Kullanıcı Adı</label><input type="text" name="username" required>
-    <label>Şifre</label><input type="password" name="password" required>
-    <button class="btn btn-primary" type="submit" style="width:100%;">Giriş Yap</button>
-    </form></div>
-    """))
-
-@app.route('/register', methods=['GET', 'POST'])
+@app.post("/register")
 def register():
-    if request.method == 'POST':
-        if not User.query.filter_by(username=request.form.get('username')).first():
-            u = User(username=request.form.get('username'), static_id=request.form.get('static_id'))
-            u.set_password(request.form.get('password'))
-            db.session.add(u); db.session.commit()
-            return redirect(url_for('login'))
-        flash('Kullanıcı adı alınmış.', 'danger')
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card" style="max-width:450px;margin:50px auto;">
-    <h2>📝 Kayıt Ol</h2>
-    <form method="POST">
-    <label>Kullanıcı Adı</label><input type="text" name="username" required>
-    <label>Statik ID</label><input type="text" name="static_id">
-    <label>Şifre</label><input type="password" name="password" required>
-    <button class="btn btn-success" type="submit" style="width:100%;">Kayıt Ol</button>
-    </form></div>
-    """))
+    username=request.form.get("username","").strip()
+    password=request.form.get("password","")
+    if len(username)<3 or len(password)<8:
+        flash("Kullanıcı adı en az 3, şifre en az 8 karakter olmalı.")
+    else:
+        try:
+            cur=db().execute("INSERT INTO users(username,password_hash,role,lang) VALUES(?,?,?,?)",(username,generate_password_hash(password),"Member",request.form.get("lang","tr")))
+            db().commit(); session["user_id"]=cur.lastrowid; flash("Hesabın oluşturuldu.")
+        except sqlite3.IntegrityError: flash("Bu kullanıcı adı zaten alınmış.")
+    return redirect(url_for("home",lang=request.form.get("lang","tr")))
 
-@app.route('/logout')
+@app.post("/login")
+def login():
+    user=db().execute("SELECT * FROM users WHERE username=?",(request.form.get("username","").strip(),)).fetchone()
+    if user and check_password_hash(user["password_hash"],request.form.get("password","")):
+        session["user_id"]=user["id"]; flash("Giriş başarılı.")
+    else: flash("Kullanıcı adı veya şifre hatalı.")
+    return redirect(url_for("home",lang=request.form.get("lang","tr")))
+
+@app.route("/logout")
 def logout():
-    logout_user(); return redirect(url_for('index'))
+    session.clear(); return redirect(url_for("home"))
 
-@app.route('/rules')
+@app.route("/rules")
 def rules():
-    posts = Post.query.filter_by(category='rules').order_by(Post.created_at.desc()).all()
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card">
-    <h2>📜 Kurallar</h2>
-    {% if current_user.is_authenticated and current_user.is_admin %}
-    <a href="{{ url_for('new_post', cat='rules') }}" class="btn btn-primary" style="margin-bottom:15px;">+ Yeni Kural</a>{% endif %}
-    {% for p in posts %}<div class="post-item">
-    <h4>[{{ p.subcategory }}] {{ p.title }}</h4><p>{{ p.content }}</p>
-    <div class="post-meta">👤 {{ p.author.username }} • {{ p.created_at.strftime('%d.%m.%Y') }}</div>
-    </div>{% else %}<p>Kural yok.</p>{% endfor %}
-    </div>
-    """), posts=posts)
+    lang=request.args.get("lang","tr")
+    content="<section class='card'><h2>Sunucu Kuralları</h2><p>Yetkililer aşağıdaki bölümlere kural ekleyebilir. Kurallar yayımlandığında herkes görebilir.</p>"
+    for cat in RULE_CATEGORIES:
+        content+=f"<section class='card'><h3>{cat}</h3>"
+        rows=db().execute("SELECT * FROM rules WHERE category=? ORDER BY id DESC",(cat,)).fetchall()
+        if not rows: content+="<p class='muted'>Henüz kural eklenmedi.</p>"
+        for r in rows: content+=f"<div class='item'><p>{r['body']}</p><small>Ekleyen: {r['author']}</small></div>"
+        if is_admin(): content+=f"""<form method="post" action="/rules/add"><input type="hidden" name="category" value="{cat}"><label>Yeni kural</label><textarea name="body" required></textarea><button>Kural Ekle</button></form>"""
+        content+="</section>"
+    content+="</section>"
+    return page(content,lang)
 
-@app.route('/companies')
-def companies():
-    posts = Post.query.filter_by(category='companies').order_by(Post.created_at.desc()).all()
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card">
-    <h2>🏢 Şirketler</h2>
-    {% if current_user.is_authenticated and current_user.is_admin %}<a href="{{ url_for('new_post', cat='companies') }}" class="btn btn-primary">+ Ekle</a>{% endif %}
-    {% for p in posts %}<div class="post-item"><h4>{{ p.title }}</h4><p>{{ p.content }}</p></div>{% else %}<p>Boş.</p>{% endfor %}
-    </div>
-    """), posts=posts)
+@app.post("/rules/add")
+@admin_required
+def add_rule():
+    body=request.form.get("body","").strip()
+    if body: db().execute("INSERT INTO rules(category,body,author) VALUES(?,?,?)",(request.form["category"],body,current_user()["username"])); db().commit(); flash("Kural eklendi.")
+    return redirect(url_for("rules"))
 
-@app.route('/government')
-def government():
-    posts = Post.query.filter_by(category='government').order_by(Post.created_at.desc()).all()
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card">
-    <h2>🏛️ Devlet</h2>
-    {% if current_user.is_authenticated and current_user.role_level >= 30 %}<a href="{{ url_for('new_post', cat='government') }}" class="btn btn-primary">+ Ekle</a>{% endif %}
-    {% for p in posts %}<div class="post-item"><h4>[{{ p.subcategory }}] {{ p.title }}</h4><p>{{ p.content }}</p></div>{% else %}<p>Boş.</p>{% endfor %}
-    </div>
-    """), posts=posts)
-
-@app.route('/ghetto')
-def ghetto():
-    posts = Post.query.filter_by(category='ghetto').order_by(Post.created_at.desc()).all()
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card">
-    <h2>⚔️ Getto</h2>
-    {% if current_user.is_authenticated and current_user.role_level >= 30 %}<a href="{{ url_for('new_post', cat='ghetto') }}" class="btn btn-primary">+ Ekle</a>{% endif %}
-    {% for p in posts %}<div class="post-item"><h4>[{{ p.subcategory }}] {{ p.title }}</h4><p>{{ p.content }}</p></div>{% else %}<p>Boş.</p>{% endfor %}
-    </div>
-    """), posts=posts)
-
-@app.route('/post/new/<cat>', methods=['GET', 'POST'])
-@requires_role('Junior Administrator')
-def new_post(cat):
-    if request.method == 'POST':
-        p = Post(category=cat, subcategory=request.form.get('subcategory'),
-                 title=request.form.get('title'), content=request.form.get('content'),
-                 author_id=current_user.id)
-        db.session.add(p); db.session.commit()
-        return redirect(url_for(cat))
-    
-    cats = {
-        'rules': ['Genel Kurallar', 'Devlet Kuralları', 'Liderlik Kuralları', 'Yeşil Bölge'],
-        'companies': ['Şirketler', 'İçerikler'],
-        'government': ['Hastane', 'Ordu', 'Polis', 'FBI', 'Medya', 'Belediye'],
-        'ghetto': ['Fangs', 'Wolves', 'Rawens']
-    }
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card" style="max-width:700px;margin:0 auto;">
-    <h2>Yeni İçerik Ekle</h2>
-    <form method="POST">
-    <label>Kategori</label>
-    <select name="subcategory">{% for c in cats %}<option>{{ c }}</option>{% endfor %}</select>
-    <label>Başlık</label><input type="text" name="title" required>
-    <label>İçerik</label><textarea name="content" rows="8" required></textarea>
-    <button class="btn btn-primary" type="submit">Kaydet</button>
-    <a href="{{ url_for(cat) }}" class="btn btn-warning">İptal</a>
-    </form></div>
-    """), cat=cat, cats=cats[cat])
-
-@app.route('/applications')
-def applications():
-    apps = Application.query.order_by(Application.created_at.desc()).all()
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card">
-    <h2>📝 Başvurular</h2>
-    <a href="{{ url_for('new_application', app_type='liderlik') }}" class="btn btn-primary">Liderlik</a>
-    <a href="{{ url_for('new_application', app_type='yonetici') }}" class="btn btn-primary">Yönetici</a>
-    <a href="{{ url_for('new_application', app_type='asistan') }}" class="btn btn-primary">Asistan</a>
-    <table style="margin-top:20px;">
-    {% for a in apps %}
-    <tr><td>{{ a.applicant.username }}</td><td>{{ a.type }}</td><td>{{ a.status }}</td>
-    <td>{% if current_user.is_authenticated and current_user.is_admin %}
-    <form method="POST" action="{{ url_for('review_app', app_id=a.id) }}" style="display:flex;gap:5px;">
-    <select name="status"><option>Kabul</option><option>Red</option></select>
-    <button class="btn btn-sm btn-primary">Onayla</button>
-    </form>{% endif %}</td></tr>
-    {% endfor %}
-    </table></div>
-    """), apps=apps)
-
-@app.route('/applications/new/<app_type>', methods=['GET', 'POST'])
-@login_required
-def new_application(app_type):
-    if request.method == 'POST':
-        a = Application(type=app_type, data=json.dumps(request.form.to_dict()), applicant_id=current_user.id)
-        db.session.add(a); db.session.commit()
-        flash('Başvurunuz alındı.', 'success')
-        return redirect(url_for('applications'))
-    
-    fields = {
-        'liderlik': ['Gerçek adınız', 'Yaşınız', 'Saat diliminiz', 'Günlük aktiflik', 'Discord', 'Oyun içi isim', 'Statik ID', 'Organizasyon', 'Neden Lider?', 'Öneriler'],
-        'yonetici': ['Gerçek adınız', 'Yaşınız', 'Saat diliminiz', 'Aktif saatler', 'Günlük aktiflik', 'Discord', 'Oyun içi isim', 'Statik ID', 'Küratör (Suç/Devlet)', 'Neden Yönetici?', 'Güçlü Yönler', 'Zayıf Yönler'],
-        'asistan': ['Gerçek adınız', 'Yaşınız', 'Saat diliminiz', 'Aktif saatler', 'Günlük aktiflik', 'Discord', 'Oyun içi isim', 'Statik ID', 'Neden Asistan?', 'Güçlü Yönler', 'Zayıf Yönler']
-    }
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card" style="max-width:700px;margin:0 auto;">
-    <h2>Başvuru Formu</h2>
-    <form method="POST">
-    {% for f in fields %}<label>{{ f }}</label><input type="text" name="{{ f }}" required>{% endfor %}
-    <button class="btn btn-success" type="submit">Gönder</button>
-    <a href="{{ url_for('applications') }}" class="btn btn-warning">İptal</a>
-    </form></div>
-    """), app_type=app_type, fields=fields[app_type])
-
-@app.route('/applications/<int:app_id>/review', methods=['POST'])
-@requires_role('Junior Administrator')
-def review_app(app_id):
-    a = Application.query.get_or_404(app_id)
-    a.status = request.form.get('status')
-    db.session.commit()
-    return redirect(url_for('applications'))
-
-@app.route('/complaints')
+@app.route("/complaints")
 def complaints():
-    comps = Complaint.query.order_by(Complaint.created_at.desc()).all()
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card">
-    <h2>⚠️ Şikayetler</h2>
-    <a href="{{ url_for('new_complaint', comp_type='player') }}" class="btn btn-danger">Oyuncu Şikayeti</a>
-    <a href="{{ url_for('new_complaint', comp_type='admin') }}" class="btn btn-warning">Yönetici Şikayeti</a>
-    <table style="margin-top:20px;">
-    {% for c in comps %}
-    <tr><td>{{ c.complainant.username }}</td><td>{{ c.type }}</td><td>{{ c.status }}</td>
-    <td>{% if current_user.is_authenticated and current_user.is_admin %}
-    <form method="POST" action="{{ url_for('review_comp', comp_id=c.id) }}" style="display:flex;gap:5px;">
-    <select name="status"><option>Kabul</option><option>Red</option></select>
-    <button class="btn btn-sm btn-primary">Onayla</button>
-    </form>{% endif %}</td></tr>
-    {% endfor %}
-    </table></div>
-    """), comps=comps)
+    lang=request.args.get("lang","tr")
+    rows=db().execute("SELECT * FROM posts WHERE kind IN ('Oyuncu Şikâyeti','Yönetici Şikâyeti','Şirketler İçerikleri') ORDER BY id DESC").fetchall()
+    content="""<section class="card"><h2>Şikâyetler ve Şirketler İçerikleri</h2><p>Şikâyet oluşturmak ve yorum yazmak için giriş yap. Kanıt bağlantısı veya açıklaması ekle; hassas kişisel bilgileri paylaşma.</p>"""
+    if current_user():
+        content+="""
+        <div class="grid">
+        <form method="post" action="/post"><h3>Oyuncu Hakkında Şikâyet</h3><input type="hidden" name="kind" value="Oyuncu Şikâyeti"><label>İşlediği suç / Şikâyet edilen kişi ismi</label><input name="target" required><label>Your Nick Name</label><input name="nick" required><label>Your Static ID</label><input name="static_id" required><label>Date</label><input name="date" type="date" required><label>Time</label><input name="time" type="time" required><label>Proof (kanıt)</label><textarea name="proof" required></textarea><button>Şikâyeti Gönder</button></form>
+        <form method="post" action="/post"><h3>Yönetici Hakkında Şikâyet</h3><input type="hidden" name="kind" value="Yönetici Şikâyeti"><label>İşlediği suç / Şikâyet edilen admin</label><input name="target" required><label>Your Nick Name</label><input name="nick" required><label>Your Static ID</label><input name="static_id" required><label>Administrator Nick Name</label><input name="admin_nick" required><label>Date</label><input name="date" type="date" required><label>Time</label><input name="time" type="time" required><label>Proof (kanıt)</label><textarea name="proof" required></textarea><button>Şikâyeti Gönder</button></form>
+        </div>
+        <form method="post" action="/post"><h3>Şirketler İçerikleri / Genel Paylaşım</h3><input type="hidden" name="kind" value="Şirketler İçerikleri"><label>Başlık</label><input name="title" required><label>İçerik</label><textarea name="body" required></textarea><button>Paylaş</button></form>
+        """
+    else: content+="<p>Şikâyet göndermek için önce giriş yap.</p>"
+    content+="<h2>Gönderiler</h2>"
+    for r in rows:
+        content+=f"<div class='item'><h3>{r['title']}</h3><p>{r['body']}</p><small>{r['kind']} · {r['author']} · {r['created']}</small><p><span class='status'>{r['status']}</span></p>"
+        if current_user():
+            content+=f"""<form method="post" action="/comment"><input type="hidden" name="post_id" value="{r['id']}"><textarea name="body" placeholder="Yorum yaz..." required></textarea><button>Yorum Ekle</button></form>"""
+        comments=db().execute("SELECT * FROM comments WHERE post_id=? ORDER BY id",(r["id"],)).fetchall()
+        for c in comments: content+=f"<p>💬 <b>{c['author']}:</b> {c['body']}</p>"
+        if is_admin():
+            content+=f"""<form method="post" action="/status"><input type="hidden" name="post_id" value="{r['id']}"><select name="status"><option>İnceleniyor</option><option>Kabul Edildi</option><option>Reddedildi</option></select><button>Durumu Kaydet</button></form>"""
+        content+="</div>"
+    content+="</section>"
+    return page(content,lang)
 
-@app.route('/complaints/new/<comp_type>', methods=['GET', 'POST'])
+@app.route("/applications")
+def applications():
+    lang=request.args.get("lang","tr")
+    rows=db().execute("SELECT * FROM posts WHERE kind LIKE '%Başvurusu' ORDER BY id DESC").fetchall()
+    content="""<section class="card"><h2>Başvurular</h2><p>Formları doldur ve gönder. Yetkililer başvuruyu inceleyip durumunu değiştirebilir.</p>"""
+    if current_user():
+        content+="""
+        <div class="grid">
+        <form method="post" action="/post"><h3>Liderlik Başvurusu</h3><input type="hidden" name="kind" value="Liderlik Başvurusu"><label>Gerçek adınız</label><input name="real_name" required><label>Yaşınız</label><input name="age" type="number" min="13" required><label>Saat diliminiz</label><input name="timezone" required><label>Günlük aktiflik süreniz</label><input name="activity" required><label>Discord kullanıcı adınız</label><input name="discord" required><label>Oyun içi isminiz</label><input name="game_name" required><label>Kalıcı oyuncu ID’niz</label><input name="player_id" required><label>Organizasyon</label><select name="organization">""" + "".join(f"<option>{o}</option>" for o in LEADER_ORGS+GETTO_ORGS) + """</select><label>Neden bu organizasyonun lideri olmak istiyorsunuz? (3 detaylı açıklama)</label><textarea name="motivation" required></textarea><label>RolePlay'i geliştirme önerileriniz</label><textarea name="ideas" required></textarea><button>Başvuruyu Gönder</button></form>
+        <form method="post" action="/post"><h3>Yönetici Başvurusu</h3><input type="hidden" name="kind" value="Yönetici Başvurusu"><label>Gerçek adınız</label><input name="real_name" required><label>Yaşınız</label><input name="age" type="number" min="13" required><label>Saat diliminiz</label><input name="timezone" required><label>Aktif olduğunuz saatler</label><input name="hours" placeholder="10:00 - 19:00" required><label>Günlük aktiflik süreniz</label><input name="activity" required><label>Discord kullanıcı adınız</label><input name="discord" required><label>Oyun içi isminiz</label><input name="game_name" required><label>Oyuncu ID’niz</label><input name="player_id" required><label>Küratörlük bölümü</label><select name="department"><option>Suç</option><option>Devlet</option></select><label>Neden yönetici olmak istiyorsunuz?</label><textarea name="motivation" required></textarea><label>Güçlü yönleriniz</label><textarea name="strengths" required></textarea><label>En büyük zayıf yönleriniz</label><textarea name="weaknesses" required></textarea><label>RP hayatından çıkıp sadece yönetici olmaya hazır mısınız?</label><textarea name="ready" required></textarea><label>Aktifliğinizi engelleyen gerçek hayat problemi var mı?</label><textarea name="availability" required></textarea><button>Başvuruyu Gönder</button></form>
+        <form method="post" action="/post"><h3>Asistan Başvurusu</h3><input type="hidden" name="kind" value="Asistan Başvurusu"><label>Gerçek adınız</label><input name="real_name" required><label>Yaşınız</label><input name="age" type="number" min="13" required><label>Saat diliminiz</label><input name="timezone" required><label>Aktif olduğunuz saatler</label><input name="hours" required><label>Günlük aktiflik süreniz</label><input name="activity" required><label>Discord kullanıcı adınız</label><input name="discord" required><label>Oyun içi isminiz</label><input name="game_name" required><label>Oyuncu ID’niz</label><input name="player_id" required><label>Neden asistan olmak istiyorsunuz?</label><textarea name="motivation" required></textarea><label>Güçlü yönleriniz</label><textarea name="strengths" required></textarea><label>En büyük zayıf yönleriniz</label><textarea name="weaknesses" required></textarea><label>Aktifliğinizi engelleyen gerçek hayat problemi var mı?</label><textarea name="availability" required></textarea><button>Başvuruyu Gönder</button></form>
+        </div>"""
+    else: content+="<p>Başvuru göndermek için giriş yapmalısın.</p>"
+    content+="<h2>Başvuruların Durumu</h2>"
+    for r in rows:
+        content+=f"<div class='item'><h3>{r['title']}</h3><p>{r['body']}</p><small>{r['author']} · {r['created']}</small><p><span class='status'>{r['status']}</span></p>"
+        if is_admin(): content+=f"""<form method="post" action="/status"><input type="hidden" name="post_id" value="{r['id']}"><select name="status"><option>İnceleniyor</option><option>Kabul Edildi</option><option>Reddedildi</option></select><button>Durumu Kaydet</button></form>"""
+        content+="</div>"
+    content+="</section>"
+    return page(content,lang)
+
+@app.route("/organizations")
+def organizations():
+    lang=request.args.get("lang","tr")
+    content="<section class='card'><h2>Devlet Kurumları</h2><div class='grid'>"
+    for org in LEADER_ORGS:
+        content+=f"<div class='card'><h3>{org}</h3><p>Lider duyuruları ve kurum paylaşımları.</p>"
+        if current_user() and (is_admin() or session.get("leader_org")==org):
+            content+=f"""<form method="post" action="/post"><input type="hidden" name="kind" value="Kurum Lideri Paylaşımı"><input type="hidden" name="organization" value="{org}"><label>Başlık</label><input name="title" required><label>İçerik</label><textarea name="body" required></textarea><button>Paylaş</button></form>"""
+        content+="</div>"
+    content+="</div><h2>Getto</h2><div class='grid'>"
+    for org in GETTO_ORGS:
+        content+=f"<div class='card'><h3>{org}</h3><p>Yalnızca ilgili lider ve yetkililer paylaşım yapabilir.</p></div>"
+    content+="</div><p class='muted'>Not: Liderlik paylaşım izni, güvenli kullanım için yönetici panelinden gerçek kullanıcıya atanmalıdır.</p></section>"
+    posts=db().execute("SELECT * FROM posts WHERE kind='Kurum Lideri Paylaşımı' ORDER BY id DESC").fetchall()
+    for r in posts: content+=f"<section class='card'><h3>{r['title']}</h3><p>{r['body']}</p><small>{r['category']} · {r['author']}</small></section>"
+    return page(content,lang)
+
+@app.post("/post")
 @login_required
-def new_complaint(comp_type):
-    if request.method == 'POST':
-        c = Complaint(type=comp_type, data=json.dumps(request.form.to_dict()), complainant_id=current_user.id)
-        db.session.add(c); db.session.commit()
-        flash('Şikayetiniz iletildi.'
-        , 'success')
-        return redirect(url_for('complaints'))
-    
-    fields = ['İşlenen Suç / Şikayet Edilen', 'Your Nick Name', 'Your Static ID', 'Date', 'Time', 'Proof (Link)', 'Ek Açıklama']
-    if comp_type == 'admin':
-        fields.insert(3, 'Administrator Nick Name')
-        
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card" style="max-width:700px;margin:0 auto;">
-    <h2>Şikayet Formu</h2>
-    <form method="POST">
-    {% for f in fields %}<label>{{ f }}</label><input type="text" name="{{ f }}" required>{% endfor %}
-    <button class="btn btn-danger" type="submit">Gönder</button>
-    <a href="{{ url_for('complaints') }}" class="btn btn-warning">İptal</a>
-    </form></div>
-    """), comp_type=comp_type, fields=fields)
+def create_post():
+    user=current_user(); kind=request.form.get("kind","")
+    fields=[]
+    for key,label in [
+        ("target","Hedef"),("nick","Your Nick Name"),("static_id","Your Static ID"),
+        ("admin_nick","Administrator Nick Name"),("date","Date"),("time","Time"),("proof","Proof"),
+        ("real_name","Gerçek ad"),("age","Yaş"),("timezone","Saat dilimi"),("activity","Aktiflik"),
+        ("discord","Discord"),("game_name","Oyun içi isim"),("player_id","Oyuncu ID"),
+        ("organization","Organizasyon"),("motivation","Motivasyon"),("ideas","Öneriler"),
+        ("hours","Aktif saatler"),("department","Bölüm"),("strengths","Güçlü yönler"),
+        ("weaknesses","Zayıf yönler"),("ready","Yönetici olmaya hazır mı"),("availability","Aktiflik durumu"),
+        ("title","Başlık"),("body","İçerik")]:
+        val=request.form.get(key,"").strip()
+        if val: fields.append(f"{label}: {val}")
+    title=request.form.get("title") or request.form.get("target") or kind
+    body="\n\n".join(fields)
+    category=request.form.get("organization","Genel")
+    if kind=="Kurum Lideri Paylaşımı" and not is_admin() and session.get("leader_org")!=category:
+        flash("Bu kurumda paylaşım yapma yetkin yok."); return redirect(url_for("organizations"))
+    db().execute("INSERT INTO posts(kind,category,title,body,author) VALUES(?,?,?,?,?)",(kind,category,title,body,user["username"]))
+    db().commit(); flash("Gönderin kaydedildi.")
+    return redirect(url_for("applications" if "Başvurusu" in kind else "organizations" if kind=="Kurum Lideri Paylaşımı" else "complaints"))
 
-@app.route('/complaints/<int:comp_id>/review', methods=['POST'])
-@requires_role('Junior Administrator')
-def review_comp(comp_id):
-    c = Complaint.query.get_or_404(comp_id)
-    c.status = request.form.get('status')
-    db.session.commit()
-    return redirect(url_for('complaints'))
+@app.post("/comment")
+@login_required
+def comment():
+    body=request.form.get("body","").strip()
+    if body:
+        db().execute("INSERT INTO comments(post_id,author,body) VALUES(?,?,?)",(request.form["post_id"],current_user()["username"],body)); db().commit()
+    return redirect(request.referrer or url_for("complaints"))
 
-@app.route('/admin')
-@requires_role('Junior Administrator')
+@app.post("/status")
+@admin_required
+def status():
+    db().execute("UPDATE posts SET status=? WHERE id=?",(request.form["status"],request.form["post_id"])); db().commit()
+    flash("Durum güncellendi."); return redirect(request.referrer or url_for("home"))
+
+@app.route("/admin")
+@admin_required
 def admin_panel():
-    users = User.query.all()
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card">
-    <h2>🛡️ Admin Paneli</h2>
-    <table>
-    <tr><th>ID</th><th>Kullanıcı</th><th>Rol</th><th>Kayıt</th></tr>
-    {% for u in users %}
-    <tr><td>{{ u.id }}</td><td>{{ u.username }}</td><td>{{ u.role }}</td><td>{{ u.created_at.strftime('%d.%m.%Y') }}</td></tr>
-    {% endfor %}
-    </table></div>
-    """), users=users)
+    users=db().execute("SELECT id,username,role FROM users ORDER BY id").fetchall()
+    content="<section class='card'><h2>Yönetim Paneli</h2><p>Üye rütbelerini buradan atayabilirsin. İlk yönetici, Render ortam değişkeniyle güvenli biçimde kurulmalıdır.</p>"
+    for u in users:
+        content+=f"""<div class='item'><b>{u['username']}</b> — {u['role']}<form method="post" action="/admin/role"><input type="hidden" name="user_id" value="{u['id']}"><select name="role">"""
+        for role in ROLES: content+=f"<option {'selected' if role==u['role'] else ''}>{role}</option>"
+        content+="""</select><button>Rütbeyi Kaydet</button></form></div>"""
+    content+="</section>"
+    return page(content)
 
-@app.route('/admin/roles', methods=['GET', 'POST'])
-@requires_role('Project Koordinatör')
-def roles_manage():
-    if request.method == 'POST':
-        u = User.query.get(request.form.get('user_id'))
-        new_role = request.form.get('role')
-        if u and new_role in ROLES:
-            if role_level(new_role) < role_level(current_user.role) or current_user.role == 'Project Manager':
-                u.role = new_role
-                db.session.commit()
-                flash('Rol güncellendi.', 'success')
-            else:
-                flash('Kendi rütbenizin üstünü veremezsiniz.', 'danger')
-        return redirect(url_for('roles_manage'))
-    
-    return render_template_string(BASE_HTML.replace("{% block content %}{% endblock %}", """
-    <div class="card">
-    <h2>🎭 Rol Yönetimi</h2>
-    <table>
-    {% for u in users %}
-    <tr>
-    <td>{{ u.username }}</td><td>{{ u.role }}</td>
-    <td>
-    <form method="POST" style="display:flex;gap:5px;">
-    <input type="hidden" name="user_id" value="{{ u.id }}">
-    <select name="role">{% for r in roles %}<option value="{{ r }}">{{ r }}</option>{% endfor %}</select>
-    <button class="btn btn-sm btn-primary">Ata</button>
-    </form>
-    </td>
-    </tr>
-    {% endfor %}
-    </table></div>
-    """), users=User.query.all(), roles=list(ROLES.keys()))
+@app.post("/admin/role")
+@admin_required
+def set_role():
+    db().execute("UPDATE users SET role=? WHERE id=?",(request.form["role"],request.form["user_id"])); db().commit()
+    flash("Kullanıcı rütbesi güncellendi."); return redirect(url_for("admin_panel"))
 
-# ============================================================
-# VERİTABANI VE İLK KURULUM
-# ============================================================
-with app.app_context():
-    db.create_all()
-    if not User.query.filter_by(username='admin').first():
-        admin = User(username='Loclifer', static_id='1', role='Project Manager')
-        admin.set_password('loclifer18101')
-        db.session.add(loclifer..)
-        db.session.commit()
+# First admin bootstrap: set ADMIN_USERNAME and ADMIN_PASSWORD in Render Environment.
+@app.cli.command("bootstrap-admin")
+def bootstrap_admin():
+    username=os.environ.get("ADMIN_USERNAME")
+    password=os.environ.get("ADMIN_PASSWORD")
+    if not username or not password:
+        print("Set ADMIN_USERNAME and ADMIN_PASSWORD environment variables first."); return
+    with app.app_context():
+        init_db()
+        with sqlite3.connect(DB) as con:
+            con.execute("INSERT OR IGNORE INTO users(username,password_hash,role) VALUES(?,?,?)",
+                        (username,generate_password_hash(password),"Project Manager"))
+            con.commit()
+    print("Admin account created or already exists.")
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
