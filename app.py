@@ -1,245 +1,480 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { supabase } from "../lib/supabase";
+import os
+from datetime import datetime, timezone
+from functools import wraps
 
-type ServerKey = "tr" | "ksa";
-type Profile = { id: string; display_name: string | null; role: string; server: ServerKey };
-type Complaint = {
-  id: string; server: ServerKey; category: string; accused_name: string; author_name: string;
-  static_id: string; complaint_date: string; complaint_time: string; details: string;
-  evidence_url: string | null; status: string; created_at: string;
-};
-type Application = { id: string; server: ServerKey; type: string; applicant_name: string; status: string; created_at: string; answers: Record<string,string> };
+from authlib.integrations.flask_client import OAuth
+from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
 
-const roles = [
-  "Project Manager", "Deputy Project Manager", "Project Coordinator",
-  "Chief Administrator", "Deputy Chief Administrator", "Senior Administrator",
-  "Junior Administrator", "Server Administrator", "Admin Assistant"
-];
-const roleLabels: Record<string,string> = {
-  "Project Manager": "Project Manager",
-  "Deputy Project Manager": "Deputy Project Manager",
-  "Project Coordinator": "Project Coordinator",
-  "Chief Administrator": "Chief Administrator",
-  "Deputy Chief Administrator": "Deputy Chief Administrator",
-  "Senior Administrator": "Senior Administrator",
-  "Junior Administrator": "Junior Administrator",
-  "Server Administrator": "Server Administrator",
-  "Admin Assistant": "Admin Assistant",
-  member: "Member"
-};
-const trRules = ["Genel Kurallar", "Devlet Kuralları", "Liderlik Kuralları", "Yeşil Bölge Kuralları"];
-const ksaRules = ["القوانين العامة", "قوانين الحكومة", "قوانين القيادة", "قوانين المنطقة الآمنة"];
-const government = ["Hastane", "Ordu", "Şehir Polisi", "FBI", "Medya", "Belediye"];
-const getto = ["Fangs", "Wolves", "Rawens"];
+app = Flask(__name__)
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-only-change-this-secret")
+db_url = os.getenv("DATABASE_URL", "sqlite:///off_leank_local.db")
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+app.config["SQLALCHEMY_DATABASE_URI"] = db_url
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True}
 
-function AppButton({children, ...props}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  return <button className="btn" {...props}>{children}</button>;
-}
+db = SQLAlchemy(app)
+oauth = OAuth(app)
+google = oauth.register(
+    name="google",
+    client_id=os.getenv("GOOGLE_CLIENT_ID"),
+    client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+    client_kwargs={"scope": "openid email profile"},
+)
 
-export default function Home() {
-  const [server, setServer] = useState<ServerKey>("tr");
-  const [lang, setLang] = useState<"tr"|"ar">("tr");
-  const [user, setUser] = useState<any>(null);
-  const [profile, setProfile] = useState<Profile|null>(null);
-  const [tab, setTab] = useState("home");
-  const [message, setMessage] = useState("");
-  const [complaints, setComplaints] = useState<Complaint[]>([]);
-  const [applications, setApplications] = useState<Application[]>([]);
-  const [rules, setRules] = useState<any[]>([]);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [complaintType, setComplaintType] = useState("player");
-  const [appType, setAppType] = useState("leadership");
-  const [form, setForm] = useState<Record<string,string>>({});
-  const isAr = server === "ksa" || lang === "ar";
-  const isAdmin = !!profile && profile.role !== "member";
-  const isProjectManager = profile?.role === "Project Manager";
-  const canReview = isAdmin;
-  const labels = useMemo(() => isAr ? {
-    choose:"اختر الخادم", tr:"الخادم التركي", ksa:"الخادم السعودي", home:"الرئيسية", rules:"القوانين",
-    complaints:"الشكاوى", applications:"التقديمات", admin:"لوحة الإدارة", login:"تسجيل الدخول",
-    logout:"تسجيل الخروج", email:"البريد الإلكتروني", password:"كلمة المرور", signIn:"دخول",
-    register:"إنشاء حساب", title:"منتدى OFF Leank RP", intro:"مجتمع رول بلاي رسمي",
-    newComplaint:"إرسال شكوى", newApplication:"إرسال طلب", submit:"إرسال", status:"الحالة",
-    accused:"اسم الشخص المشتكى عليه", author:"اسمك داخل اللعبة", staticId:"الرقم الثابت",
-    date:"التاريخ", time:"الوقت", details:"تفاصيل الشكوى", evidence:"رابط الدليل",
-    player:"شكوى لاعب", adminComplaint:"شكوى ضد إداري", leadership:"طلب قيادة",
-    administrator:"طلب إداري", assistant:"طلب مساعد إداري", pending:"قيد المراجعة",
-    accepted:"مقبول", rejected:"مرفوض", review:"مراجعة", accept:"قبول", reject:"رفض",
-    noItems:"لا توجد سجلات بعد.", role:"رتبتك", serverLabel:"الخادم"
-  } : {
-    choose:"Sunucu seç", tr:"Türkiye Sunucusu", ksa:"KSA Sunucusu", home:"Ana Sayfa", rules:"Kurallar",
-    complaints:"Şikâyetler", applications:"Başvurular", admin:"Yönetim Paneli", login:"Giriş",
-    logout:"Çıkış yap", email:"E-posta", password:"Şifre", signIn:"Giriş yap",
-    register:"Hesap oluştur", title:"OFF Leank RP Forum", intro:"Resmî RolePlay topluluğu",
-    newComplaint:"Şikâyet gönder", newApplication:"Başvuru gönder", submit:"Gönder", status:"Durum",
-    accused:"Şikâyet edilen kişinin adı", author:"Oyun içi adın", staticId:"Static ID",
-    date:"Tarih", time:"Saat", details:"Şikâyet ayrıntıları", evidence:"Kanıt bağlantısı",
-    player:"Oyuncu şikâyeti", adminComplaint:"Yönetici şikâyeti", leadership:"Liderlik başvurusu",
-    administrator:"Yönetici başvurusu", assistant:"Asistan başvurusu", pending:"İnceleniyor",
-    accepted:"Kabul edildi", rejected:"Reddedildi", review:"İncele", accept:"Kabul et", reject:"Reddet",
-    noItems:"Henüz kayıt yok.", role:"Rolün", serverLabel:"Sunucu"
-  }, [isAr]);
+ROLES = [
+    "Member", "Admin Assistant", "The Server Administrator", "Junior Administrator",
+    "Senior Administrator", "Deputy Chief Administrator", "Chief Administrator",
+    "Project Coordinator", "Deputy Project Manager", "Project Manager", "OWNER"
+]
+ROLE_LABELS = {"OWNER": "Senior Administrator (Owner)"}
+ADMIN_ROLES = set(ROLES[1:])
+LEADER_SECTIONS = {"Hospital", "Army", "City Police", "FBI", "Media", "Municipality",
+                   "Fangs", "Wolves", "Rawens"}
+RULE_CATEGORIES = ["General Rules", "State Rules", "Leadership Rules", "Green Zone Rules"]
+DEPARTMENTS = ["Hospital", "Army", "City Police", "FBI", "Media", "Municipality"]
+GANGS = ["Fangs", "Wolves", "Rawens"]
 
-  useEffect(() => {
-    if (!supabase) return;
-    supabase.auth.getSession().then(({data}) => setUser(data.session?.user ?? null));
-    const {data:{subscription}} = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
-    return () => subscription.unsubscribe();
-  }, []);
 
-  useEffect(() => {
-    if (!supabase || !user) { setProfile(null); return; }
-    let alive = true;
-    supabase.from("profiles").select("id,display_name,role,server").eq("id", user.id).maybeSingle()
-      .then(({data}) => { if (alive && data) setProfile(data as Profile); });
-    return () => { alive = false; };
-  }, [user]);
+def utcnow():
+    return datetime.now(timezone.utc)
 
-  async function loadData() {
-    if (!supabase) return;
-    const [{data:c},{data:a},{data:r}] = await Promise.all([
-      supabase.from("complaints").select("*").eq("server",server).order("created_at",{ascending:false}).limit(100),
-      supabase.from("applications").select("*").eq("server",server).order("created_at",{ascending:false}).limit(100),
-      supabase.from("rules").select("*").eq("server",server).order("sort_order")
-    ]);
-    setComplaints((c ?? []) as Complaint[]);
-    setApplications((a ?? []) as Application[]);
-    setRules(r ?? []);
-  }
-  useEffect(() => { void loadData(); }, [server, user]);
 
-  async function auth(e: FormEvent, mode:"login"|"register") {
-    e.preventDefault();
-    if (!supabase) { setMessage("Önce .env.local dosyasına Supabase URL ve anon key ekle."); return; }
-    setBusy(true); setMessage("");
-    const result = mode === "login"
-      ? await supabase.auth.signInWithPassword({email,password})
-      : await supabase.auth.signUp({email,password});
-    setBusy(false);
-    setMessage(result.error?.message ?? (mode === "register" ? "Hesap oluşturuldu. E-posta doğrulaması gerekiyorsa gelen kutunu kontrol et." : "Giriş başarılı."));
-  }
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    google_sub = db.Column(db.String(160), unique=True, nullable=False)
+    email = db.Column(db.String(320), unique=True, nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=False, default="Player")
+    avatar = db.Column(db.String(500))
+    role = db.Column(db.String(80), nullable=False, default="Member")
+    server = db.Column(db.String(8), nullable=False, default="tr")
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
-  async function submitComplaint(e: FormEvent) {
-    e.preventDefault();
-    if (!supabase || !user) { setMessage("Şikâyet göndermek için giriş yapmalısın."); return; }
-    const {error} = await supabase.from("complaints").insert({
-      server, category:complaintType, accused_name:form.accused || "", author_name:form.author || "",
-      static_id:form.static_id || "", complaint_date:form.date || "", complaint_time:form.time || "",
-      details:form.details || "", evidence_url:form.evidence || null
-    });
-    setMessage(error?.message ?? "Şikâyet gönderildi."); setForm({});
-    if (!error) { setTab("complaints"); void loadData(); }
-  }
 
-  const appQuestions: Record<string,string[]> = {
-    leadership: ["Gerçek adınız","Yaşınız","Saat diliminiz","Günlük ortalama aktiflik süreniz","Discord kullanıcı adınız","Oyun içi isminiz","Kalıcı oyuncu ID’niz","Liderlik başvurusu yapılan organizasyon","Neden özellikle bu organizasyonun lideri olmak istiyorsunuz? (3 detaylı açıklama)","RolePlay’i geliştirmek için önerileriniz"],
-    administrator: ["Gerçek adınız","Yaşınız","Saat diliminiz","Sunucu saatine göre aktif olduğunuz saatler","Günlük ortalama aktiflik süreniz","Discord kullanıcı adınız","Oyun içi isminiz","Kalıcı oyuncu ID’niz","Küratör olmak istediğiniz bölüm (Suç/Devlet)","Neden yönetici olmak istiyorsunuz?","Güçlü yönleriniz","En büyük zayıf yönleriniz","RP’den çıkıp sadece yönetici olmaya hazır mısınız?","Aktifliğinizi engelleyen bir durum var mı?"],
-    assistant: ["Gerçek adınız","Yaşınız","Saat diliminiz","Sunucu saatine göre aktif olduğunuz saatler","Günlük ortalama aktiflik süreniz","Discord kullanıcı adınız","Oyun içi isminiz","Kalıcı oyuncu ID’niz","Neden asistan olmak istiyorsunuz?","Güçlü yönleriniz","En büyük zayıf yönleriniz","Aktifliğinizi engelleyen bir durum var mı?"]
-  };
+class Rule(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    server = db.Column(db.String(8), nullable=False, index=True)
+    category = db.Column(db.String(80), nullable=False)
+    title = db.Column(db.String(180), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    author_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
-  async function submitApplication(e: FormEvent) {
-    e.preventDefault();
-    if (!supabase || !user) { setMessage("Başvuru göndermek için giriş yapmalısın."); return; }
-    const {error} = await supabase.from("applications").insert({server,type:appType,applicant_name:form["Oyun içi isminiz"] || form["Gerçek adınız"] || "",answers:form});
-    setMessage(error?.message ?? "Başvurun gönderildi."); setForm({});
-    if (!error) { setTab("applications"); void loadData(); }
-  }
 
-  async function setStatus(table:"complaints"|"applications", id:string, status:string) {
-    if (!supabase) return;
-    const {error} = await supabase.from(table).update({status}).eq("id",id);
-    setMessage(error?.message ?? "Durum güncellendi."); void loadData();
-  }
+class Complaint(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    server = db.Column(db.String(8), nullable=False, index=True)
+    kind = db.Column(db.String(20), nullable=False)  # player/admin
+    crime = db.Column(db.String(500), nullable=False)
+    accused = db.Column(db.String(160), nullable=False)
+    reporter_nick = db.Column(db.String(160), nullable=False)
+    static_id = db.Column(db.String(100), nullable=False)
+    accused_admin = db.Column(db.String(160))
+    complaint_date = db.Column(db.String(50), nullable=False)
+    complaint_time = db.Column(db.String(50), nullable=False)
+    proof = db.Column(db.Text, nullable=False)
+    details = db.Column(db.Text)
+    status = db.Column(db.String(20), nullable=False, default="reviewing")
+    decision_note = db.Column(db.Text)
+    reporter_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
-  async function changeRole(targetId:string, role:string) {
-    if (!supabase) return;
-    const {error} = await supabase.rpc("set_member_role", {target_user_id:targetId, new_role:role});
-    setMessage(error?.message ?? "Rol güncellendi.");
-  }
 
-  const title = isAr ? "OFF Leank RP" : "OFF Leank RP";
-  const currentRules = server === "tr" ? trRules : ksaRules;
+class Notification(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    server = db.Column(db.String(8), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    url = db.Column(db.String(500), nullable=False, default="/")
+    read = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
-  return <main dir={isAr ? "rtl" : "ltr"} className={isAr ? "rtl" : ""}>
-    <header className="topbar">
-      <div className="brand"><span className="logo">OL</span><div><strong>OFF LEANK RP</strong><small>{labels.intro}</small></div></div>
-      <div className="top-actions">
-        <select aria-label={labels.choose} value={server} onChange={e => {setServer(e.target.value as ServerKey); setLang(e.target.value === "ksa" ? "ar" : "tr"); setTab("home");}}>
-          <option value="tr">🇹🇷 TR — Türkçe</option><option value="ksa">🇸🇦 KSA — العربية</option>
-        </select>
-        {user ? <><span className="userchip">{profile?.role ?? "Member"}</span><AppButton onClick={() => supabase?.auth.signOut()}>{labels.logout}</AppButton></> : <a className="btn" href="#auth">{labels.login}</a>}
-      </div>
-    </header>
 
-    <section className="hero">
-      <div className="hero-copy"><span className="eyebrow">{server === "tr" ? "🇹🇷 TÜRKİYE SUNUCUSU" : "🇸🇦 خادم المملكة العربية السعودية"}</span>
-        <h1>{title}</h1><p>{labels.intro}. {server === "tr" ? "Kurallar, topluluk başvuruları ve şikâyetler tek yerde." : "القوانين والتقديمات والشكاوى في مكان واحد."}</p>
-        <div className="hero-actions"><AppButton onClick={() => setTab("rules")}>{labels.rules}</AppButton><AppButton onClick={() => setTab("applications")}><span>{labels.applications}</span></AppButton></div>
-      </div>
-      <div className="hero-mark"><span>{server === "tr" ? "🇹🇷" : "🇸🇦"}</span><strong>{server === "tr" ? "TR COMMUNITY" : "KSA COMMUNITY"}</strong><small>ROLEPLAY • COMMUNITY • FAIR PLAY</small></div>
-    </section>
+class Application(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    server = db.Column(db.String(8), nullable=False, index=True)
+    kind = db.Column(db.String(30), nullable=False)
+    applicant_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    answers = db.Column(db.JSON, nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="reviewing")
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
-    <nav className="nav">
-      {[[ "home",labels.home],["rules",labels.rules],["complaints",labels.complaints],["applications",labels.applications],...(isAdmin?[["admin",labels.admin]]:[])].map(([key,label]) =>
-        <button key={key} className={tab===key?"navitem active":"navitem"} onClick={() => setTab(key as string)}>{label}</button>)}
-    </nav>
 
-    {!supabase && <div className="notice">Kurulum gerekli: Supabase projesi oluşturup .env.local dosyasını doldur.</div>}
-    {message && <div className="notice" role="status">{message}<button onClick={() => setMessage("")}>×</button></div>}
+class CommunityPost(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    server = db.Column(db.String(8), nullable=False, index=True)
+    section = db.Column(db.String(100), nullable=False)
+    title = db.Column(db.String(180), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    author_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
-    {tab === "home" && <section className="content">
-      <div className="section-heading"><div><span className="eyebrow">COMMUNITY CENTER</span><h2>{server==="tr"?"Sunucu Merkezi":"مركز الخادم"}</h2></div><p>{server==="tr"?"İhtiyacın olan bölüme geç.":"انتقل إلى القسم الذي تحتاجه."}</p></div>
-      <div className="cards">
-        <article className="tile"><span className="tile-icon">§</span><h3>{labels.rules}</h3><p>{server==="tr"?"Sunucu kurallarını oku.":"اقرأ قوانين الخادم."}</p><AppButton onClick={() => setTab("rules")}>Aç →</AppButton></article>
-        <article className="tile"><span className="tile-icon">!</span><h3>{labels.complaints}</h3><p>{server==="tr"?"Oyuncu veya yönetici hakkında bildirim oluştur.":"قدّم شكوى عن لاعب أو إداري."}</p><AppButton onClick={() => setTab("complaints")}>Aç →</AppButton></article>
-        <article className="tile"><span className="tile-icon">✦</span><h3>{labels.applications}</h3><p>{server==="tr"?"Liderlik ve ekip başvurusu gönder.":"قدّم طلب قيادة أو إدارة."}</p><AppButton onClick={() => setTab("applications")}>Aç →</AppButton></article>
-      </div>
-      <div className="section-heading compact"><div><span className="eyebrow">ORGANIZATIONS</span><h2>{server==="tr"?"Devlet Kurumları":"المؤسسات الحكومية"}</h2></div></div>
-      <div className="pills">{(server==="tr"?government:["المستشفى","الجيش","شرطة المدينة","FBI","الإعلام","البلدية"]).map(x=><span className="pill" key={x}>{x} <small>• Lider</small></span>)}</div>
-      <div className="section-heading compact"><div><span className="eyebrow">GETTO</span><h2>{server==="tr"?"Getto Organizasyonları":"منظمات الغيتو"}</h2></div></div>
-      <div className="pills">{getto.map(x=><span className="pill" key={x}>{x} <small>• Lider</small></span>)}</div>
-    </section>}
 
-    {tab === "rules" && <section className="content"><div className="section-heading"><div><span className="eyebrow">SERVER POLICIES</span><h2>{labels.rules}</h2></div><p>{server==="tr"?"Kuralları yetkililer düzenleyebilir.":"يمكن للإدارة تعديل القوانين."}</p></div>
-      <div className="rule-list">{currentRules.map((name,i) => {
-        const saved = rules.find(r=>r.title===name);
-        return <article className="rule" key={name}><div className="rule-number">0{i+1}</div><div><h3>{name}</h3><p>{saved?.body || (server==="tr"?"Bu bölümün içeriği henüz eklenmedi. Yetkili ekip SQL üzerinden kural ekleyebilir.":"لم تتم إضافة محتوى هذا القسم بعد. يمكن للإدارة إضافة القوانين من قاعدة البيانات.")}</p></div></article>;
-      })}</div>
-      <h3>{server==="tr"?"Şirketler":"الشركات"}</h3><p className="muted">{server==="tr"?"Şirket içerikleri ve organizasyon açıklamaları bu alanda yayınlanabilir.":"يمكن نشر تفاصيل الشركات والمنظمات هنا."}</p>
-    </section>}
+def current_user():
+    uid = session.get("user_id")
+    return db.session.get(User, uid) if uid else None
 
-    {tab === "complaints" && <section className="content"><div className="section-heading"><div><span className="eyebrow">REPORT CENTER</span><h2>{labels.complaints}</h2></div><span className="counter">{complaints.length} kayıt</span></div>
-      {user ? <form className="panel formgrid" onSubmit={submitComplaint}>
-        <h3 className="full">{labels.newComplaint}</h3>
-        <label>{isAr?"نوع الشكوى":"Şikâyet türü"}<select value={complaintType} onChange={e=>setComplaintType(e.target.value)}><option value="player">{labels.player}</option><option value="admin">{labels.adminComplaint}</option></select></label>
-        <label>{labels.accused}<input required value={form.accused||""} onChange={e=>setForm({...form,accused:e.target.value})}/></label>
-        <label>{labels.author}<input required value={form.author||""} onChange={e=>setForm({...form,author:e.target.value})}/></label>
-        <label>{labels.staticId}<input required value={form.static_id||""} onChange={e=>setForm({...form,static_id:e.target.value})}/></label>
-        {complaintType==="admin" && <label>{isAr?"اسم الإداري":"Şikâyet edilen admin"}<input required value={form.admin_name||""} onChange={e=>setForm({...form,accused:e.target.value,admin_name:e.target.value})}/></label>}
-        <label>{labels.date}<input type="date" required value={form.date||""} onChange={e=>setForm({...form,date:e.target.value})}/></label>
-        <label>{labels.time}<input type="time" required value={form.time||""} onChange={e=>setForm({...form,time:e.target.value})}/></label>
-        <label className="full">{labels.details}<textarea required rows={4} value={form.details||""} onChange={e=>setForm({...form,details:e.target.value})}/></label>
-        <label className="full">{labels.evidence}<input type="url" placeholder="https://..." value={form.evidence||""} onChange={e=>setForm({...form,evidence:e.target.value})}/></label>
-        <div className="full"><AppButton type="submit">{labels.submit}</AppButton></div>
-      </form> : <div className="panel"><p>{server==="tr"?"Şikâyet göndermek için giriş yap.":"سجّل الدخول لإرسال شكوى."} <a href="#auth">{labels.login}</a></p></div>}
-      <div className="stack">{complaints.map(c=><article className="record" key={c.id}><div className="record-top"><span className="tag">{c.category==="admin"?labels.adminComplaint:labels.player}</span><span className={"status "+c.status}>{c.status==="accepted"?labels.accepted:c.status==="rejected"?labels.rejected:labels.pending}</span></div><h3>{c.accused_name}</h3><p>{c.details}</p><small>{c.author_name} · ID {c.static_id} · {c.complaint_date} {c.complaint_time}</small>{c.evidence_url&&<p><a href={c.evidence_url} target="_blank" rel="noreferrer">Kanıtı aç</a></p>}
-        {canReview&&<div className="record-actions"><AppButton onClick={()=>setStatus("complaints",c.id,"accepted")}>{labels.accept}</AppButton><AppButton onClick={()=>setStatus("complaints",c.id,"rejected")}>{labels.reject}</AppButton></div>}</article>)}</div>
-      {!complaints.length&&<p className="muted">{labels.noItems}</p>}
-    </section>}
 
-    {tab === "applications" && <section className="content"><div className="section-heading"><div><span className="eyebrow">JOIN THE TEAM</span><h2>{labels.applications}</h2></div></div>
-      {user ? <form className="panel formgrid" onSubmit={submitApplication}><h3 className="full">{labels.newApplication}</h3>
-        <label className="full">{isAr?"نوع الطلب":"Başvuru türü"}<select value={appType} onChange={e=>{setAppType(e.target.value);setForm({});}}><option value="leadership">{labels.leadership}</option><option value="administrator">{labels.administrator}</option><option value="assistant">{labels.assistant}</option></select></label>
-        {appQuestions[appType].map((q,i)=><label key={q} className={q.length>45?"full":""}>{i+1}. {q}<textarea required rows={q.length>45?3:1} value={form[q]||""} onChange={e=>setForm({...form,[q]:e.target.value})}/></label>)}
-        <div className="full"><AppButton type="submit">{labels.submit}</AppButton></div>
-      </form> : <div className="panel"><p>{server==="tr"?"Başvuru göndermek için giriş yap.":"سجّل الدخول لإرسال طلب."} <a href="#auth">{labels.login}</a></p></div>}
-      <div className="stack">{applications.map(a=><article className="record" key={a.id}><div className="record-top"><span className="tag">{a.type}</span><span className={"status "+a.status}>{a.status==="accepted"?labels.accepted:a.status==="rejected"?labels.rejected:labels.pending}</span></div><h3>{a.applicant_name}</h3><small>{new Date(a.created_at).toLocaleString()}</small>{canReview&&<div className="record-actions"><AppButton onClick={()=>setStatus("applications",a.id,"accepted")}>{labels.accept}</AppButton><AppButton onClick={()=>setStatus("applications",a.id,"rejected")}>{labels.reject}</AppButton></div>}</article>)}</div>
-      {!applications.length&&<p className="muted">{labels.noItems}</p>}
-    </section>}
+def is_owner(user=None):
+    user = user or current_user()
+    return bool(user and user.email.lower() == os.getenv("OWNER_EMAIL", "alikayahd041@gmail.com").lower())
 
-    {tab === "admin" && isAdmin && <section className="content"><div className="section-heading"><div><span className="eyebrow">STAFF ONLY</span><h2>{labels.admin}</h2></div></div>
-      <div className="panel"><h3>{labels.role}</h3><p>{profile?.role}</p><p className="muted">Rol atama işlemi yalnızca Project Manager tarafından yapılabilir. Kullanıcı ID's
+
+def role_rank(user=None):
+    user = user or current_user()
+    if not user:
+        return 0
+    if is_owner(user):
+        return 100
+    try:
+        return ROLES.index(user.role)
+    except ValueError:
+        return 0
+
+
+def can_moderate(user=None):
+    return role_rank(user) >= 1
+
+
+def can_manage_roles(user=None):
+    return role_rank(user) >= ROLES.index("Project Manager") or is_owner(user)
+
+
+def can_write_leader_section(user, section):
+    if not user:
+        return False
+    if is_owner(user) or role_rank(user) >= ROLES.index("Project Coordinator"):
+        return True
+    # Leadership is assigned through a role name like "Leader: FBI" in production.
+    return user.role == f"Leader: {section}"
+
+
+def notify_user(user_id, server, title, body, target_url="/"):
+    db.session.add(Notification(user_id=user_id, server=server, title=title,
+                                body=body, url=target_url))
+
+
+def notify_moderators(server, title, body, target_url="/"):
+    moderators = User.query.filter(User.server == server).all()
+    for user in moderators:
+        if can_moderate(user):
+            notify_user(user.id, server, title, body, target_url)
+
+
+@app.before_request
+def ensure_schema():
+    # Suitable for this starter. For production, use migrations rather than create_all.
+    if not getattr(app, "_schema_ready", False):
+        db.create_all()
+        app._schema_ready = True
+
+
+@app.context_processor
+def inject_globals():
+    user = current_user()
+    server = session.get("server", "tr")
+    unread = Notification.query.filter_by(user_id=user.id, server=server, read=False).count() if user else 0
+    return dict(me=user, server=server, is_ar=(server == "ksa"),
+                can_moderate=can_moderate(user), can_manage_roles=can_manage_roles(user),
+                role_label=(ROLE_LABELS.get("OWNER") if is_owner(user) else (user.role if user else "Member")),
+                unread_count=unread, roles=ROLES, rule_categories=RULE_CATEGORIES,
+                departments=DEPARTMENTS, gangs=GANGS)
+
+
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not current_user():
+            flash("Please sign in with Google first.", "error")
+            return redirect(url_for("login", next=request.path))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def moderator_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not can_moderate():
+            abort(403)
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def owner_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not is_owner():
+            abort(403)
+        return view(*args, **kwargs)
+    return wrapped
+
+
+@app.route("/choose", methods=["GET", "POST"])
+def choose_server():
+    if request.method == "POST":
+        server = request.form.get("server")
+        if server not in ("tr", "ksa"):
+            abort(400)
+        session["server"] = server
+        user = current_user()
+        if user:
+            user.server = server
+            db.session.commit()
+        return redirect(url_for("index"))
+    return render_template("choose.html")
+
+
+@app.route("/")
+def index():
+    if not session.get("server"):
+        return redirect(url_for("choose_server"))
+    server = session["server"]
+    rules = Rule.query.filter_by(server=server).order_by(Rule.created_at.desc()).all()
+    complaints = Complaint.query.filter_by(server=server).order_by(Complaint.created_at.desc()).limit(10).all()
+    posts = CommunityPost.query.filter_by(server=server).order_by(CommunityPost.created_at.desc()).limit(20).all()
+    apps = Application.query.filter_by(server=server).order_by(Application.created_at.desc()).limit(10).all() if can_moderate() else []
+    return render_template("index.html", rules=rules, complaints=complaints, posts=posts, applications=apps,
+                           role_choices=[r for r in ROLES if r != "OWNER"])
+
+
+@app.route("/login")
+def login():
+    if not os.getenv("GOOGLE_CLIENT_ID") or not os.getenv("GOOGLE_CLIENT_SECRET"):
+        flash("Google OAuth is not configured in Render environment variables.", "error")
+        return redirect(url_for("index"))
+    return google.authorize_redirect(url_for("auth_callback", _external=True))
+
+
+@app.route("/auth/callback")
+def auth_callback():
+    token = google.authorize_access_token()
+    info = token.get("userinfo") or google.parse_id_token(token)
+    if not info or not info.get("email") or not info.get("sub"):
+        abort(400, "Google did not return a verified user identity.")
+    if not info.get("email_verified", False):
+        abort(403, "Please use a verified Google email.")
+    email = info["email"].lower()
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        user = User(google_sub=info["sub"], email=email, name=info.get("name") or "Player",
+                    avatar=info.get("picture"), role="Member", server=session.get("server", "tr"))
+        db.session.add(user)
+        db.session.flush()
+    user.google_sub = info["sub"]
+    user.name = info.get("name") or user.name
+    user.avatar = info.get("picture") or user.avatar
+    if is_owner(user):
+        # Internal OWNER is the top permission; display label remains Senior Administrator (Owner).
+        user.role = "OWNER"
+    db.session.commit()
+    session["user_id"] = user.id
+    return redirect(request.args.get("next") or url_for("index"))
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.pop("user_id", None)
+    flash("Signed out.", "success")
+    return redirect(url_for("index"))
+
+
+@app.route("/rules/add", methods=["POST"])
+@login_required
+@moderator_required
+def add_rule():
+    category = request.form.get("category", "")
+    title = request.form.get("title", "").strip()
+    body = request.form.get("body", "").strip()
+    if category not in RULE_CATEGORIES or not title or not body:
+        flash("Complete all rule fields.", "error")
+    else:
+        db.session.add(Rule(server=session["server"], category=category, title=title,
+                            body=body, author_id=current_user().id))
+        db.session.commit()
+        flash("Rule published.", "success")
+    return redirect(url_for("index") + "#rules")
+
+
+@app.route("/rules/<int:rule_id>/delete", methods=["POST"])
+@login_required
+@moderator_required
+def delete_rule(rule_id):
+    rule = db.session.get(Rule, rule_id) or abort(404)
+    if rule.server != session.get("server"):
+        abort(404)
+    db.session.delete(rule)
+    db.session.commit()
+    flash("Rule deleted.", "success")
+    return redirect(url_for("index") + "#rules")
+
+
+@app.route("/complaints/add", methods=["POST"])
+@login_required
+def add_complaint():
+    server = session.get("server")
+    kind = request.form.get("kind", "player")
+    crime = request.form.get("crime", "").strip()
+    accused = request.form.get("accused", "").strip()
+    nick = request.form.get("reporter_nick", "").strip()
+    static_id = request.form.get("static_id", "").strip()
+    date = request.form.get("complaint_date", "").strip()
+    time = request.form.get("complaint_time", "").strip()
+    proof = request.form.get("proof", "").strip()
+    accused_admin = request.form.get("accused_admin", "").strip()
+    details = request.form.get("details", "").strip()
+    if kind not in ("player", "admin") or not all([crime, accused, nick, static_id, date, time, proof]):
+        flash("Please complete all required complaint fields.", "error")
+        return redirect(url_for("index") + "#complaints")
+    complaint = Complaint(server=server, kind=kind, crime=crime, accused=accused, reporter_nick=nick,
+                          static_id=static_id, accused_admin=accused_admin, complaint_date=date,
+                          complaint_time=time, proof=proof, details=details, reporter_id=current_user().id)
+    db.session.add(complaint)
+    db.session.flush()
+    notify_moderators(server, "New complaint", f"Complaint #{complaint.id} needs review.", "/#complaints")
+    # Confirmation for the player is also persisted.
+    notify_user(current_user().id, server, "Complaint received",
+                f"Your complaint #{complaint.id} was submitted and is under review.", "/#complaints")
+    db.session.commit()
+    flash("Complaint submitted. Staff have been notified.", "success")
+    return redirect(url_for("index") + "#complaints")
+
+
+@app.route("/complaints/<int:complaint_id>/status", methods=["POST"])
+@login_required
+@moderator_required
+def complaint_status(complaint_id):
+    complaint = db.session.get(Complaint, complaint_id) or abort(404)
+    if complaint.server != session.get("server"):
+        abort(404)
+    status = request.form.get("status")
+    if status not in ("reviewing", "accepted", "rejected"):
+        abort(400)
+    note = request.form.get("decision_note", "").strip()
+    complaint.status = status
+    complaint.decision_note = note
+    status_text = {"reviewing": "Under review", "accepted": "Accepted", "rejected": "Rejected"}[status]
+    notify_user(complaint.reporter_id, complaint.server, f"Complaint #{complaint.id}: {status_text}",
+                note or f"Your complaint status is now: {status_text}.", "/#complaints")
+    db.session.commit()
+    flash("Status updated; the complainant has been notified.", "success")
+    return redirect(url_for("index") + "#complaints")
+
+
+@app.route("/applications/add", methods=["POST"])
+@login_required
+def add_application():
+    kind = request.form.get("kind", "")
+    allowed = {"leadership", "administrator", "assistant"}
+    if kind not in allowed:
+        abort(400)
+    answers = {k: v.strip() for k, v in request.form.items() if k not in ("kind",) and v.strip()}
+    if len(answers) < 4:
+        flash("Please answer the application questions.", "error")
+        return redirect(url_for("index") + "#applications")
+    application = Application(server=session["server"], kind=kind, applicant_id=current_user().id, answers=answers)
+    db.session.add(application)
+    db.session.flush()
+    notify_moderators(session["server"], "New application", f"A {kind} application needs review.", "/#applications")
+    notify_user(current_user().id, session["server"], "Application received",
+                "Your application was submitted and is awaiting review.", "/#applications")
+    db.session.commit()
+    flash("Application submitted.", "success")
+    return redirect(url_for("index") + "#applications")
+
+
+@app.route("/applications/<int:application_id>/status", methods=["POST"])
+@login_required
+@moderator_required
+def application_status(application_id):
+    application = db.session.get(Application, application_id) or abort(404)
+    if application.server != session.get("server"):
+        abort(404)
+    status = request.form.get("status")
+    if status not in ("reviewing", "accepted", "rejected"):
+        abort(400)
+    application.status = status
+    applicant = db.session.get(User, application.applicant_id)
+    if applicant:
+        notify_user(applicant.id, application.server, "Application updated",
+                    f"Your {application.kind} application status: {status}.", "/#applications")
+    db.session.commit()
+    flash("Application status updated.", "success")
+    return redirect(url_for("index") + "#applications")
+
+
+@app.route("/posts/add", methods=["POST"])
+@login_required
+def add_post():
+    section = request.form.get("section", "").strip()
+    title = request.form.get("title", "").strip()
+    body = request.form.get("body", "").strip()
+    allowed_sections = set(DEPARTMENTS + GANGS + ["Companies"])
+    if section not in allowed_sections or not title or not body:
+        abort(400)
+    if section in LEADER_SECTIONS and not can_write_leader_section(current_user(), section):
+        abort(403)
+    post = CommunityPost(server=session["server"], section=section, title=title,
+                         body=body, author_id=current_user().id)
+    db.session.add(post)
+    db.session.commit()
+    flash("Post published.", "success")
+    return redirect(url_for("index") + "#community")
+
+
+@app.route("/notifications")
+@login_required
+def notifications():
+    items = Notification.query.filter_by(user_id=current_user().id, server=session.get("server")).order_by(Notification.created_at.desc()).limit(100).all()
+    return render_template("notifications.html", items=items)
+
+
+@app.route("/notifications/<int:notification_id>/read", methods=["POST"])
+@login_required
+def notification_read(notification_id):
+    item = db.session.get(Notification, notification_id) or abort(404)
+    if item.user_id != current_user().id or item.server != session.get("server"):
+        abort(403)
+    item.read = True
+    db.session.commit()
+    return redirect(item.url or url_for("notifications"))
+
+
+@app.route("/roles", methods=["POST"])
+@login_required
+@owner_required
+def set_role():
+    target_id = request.form.get("target_id", type=int)
+    new_role = request.form.get("role", "")
+    target = db.session.get(User, target_id) if target_id else None
+    if not target or new_role not in [r for r in ROLES if r != "OWNER"]:
+        abort(400)
+    if is_owner(target):
+        abort(403, "Owner role cannot be changed.")
+    target.role = new_role
+    db.session.commit()
+    flash(f"Role updated for {target.email}.", "success")
+    return redirect(url_for("index") + "#roles")
+
+
+@app.route("/health")
+def health():
+    return {"ok": True}
+
+
+@app.errorhandler(403)
+def forbidden(_error):
+    return render_template("error.html", code=403, message="You do not have permission for this action."), 403
+
+
+@app.errorhandler(404)
+def not_found(_error):
+    return render_template("error.html", code=404, message="Page or item not found."), 404
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=False)
